@@ -306,7 +306,9 @@
                 'fetchIntervalValue',
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 0x2, Q = O['fetchIntervalUnit'] || 's';
-        return Q === 's' ? P * 0x3e8 : P;
+        var _ms = Q === 's' ? P * 0x3e8 : P;
+        // Minimum 3 seconds to avoid Amazon rate limiting
+        return Math.max(_ms, 3000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
@@ -1034,20 +1036,28 @@
                         if (b) { clearInterval(b); b = null; }
                         b = setTimeout(() => { p ? D() : null; }, 5000);
                     } else {
-                        // Genuine rate limit — switch to random 3-8s interval until 200 returns
+                        // Genuine rate limit — we have a valid token but Amazon says slow down
                         if (!window['_rateLimited']) {
                             window['_rateLimited'] = true;
                             window['_normalInterval'] = c; // save original interval
-                            console.log('[fetch.js] 403/429 detected — switching to random 3-8s interval');
+                            console.log('[fetch.js] Rate limited — backing off');
                         }
                         window['_rateLimitCount'] = (window['_rateLimitCount'] || 0) + 1;
-                        // Exponential backoff: 3-5s first few, then 5-10s, then 10-20s
-                        var _baseMs = window['_rateLimitCount'] <= 3 ? 3000 :
-                                      window['_rateLimitCount'] <= 8 ? 5000 : 10000;
-                        var _randomMs = (_baseMs + Math['floor'](Math['random']() * _baseMs));
-                        _ringState('warn', 'Rate limited — retry in ' + Math['round'](_randomMs/1000) + 's', _randomMs);
+                        // Smart backoff: start at normal interval + jitter, only escalate after many failures
+                        var _retryMs;
+                        if (window['_rateLimitCount'] <= 2) {
+                            // First 2 rate limits: just add 1-2s to normal interval
+                            _retryMs = Math.max(c, 3000) + Math.floor(Math.random() * 2000);
+                        } else if (window['_rateLimitCount'] <= 5) {
+                            // 3-5 rate limits: 5-8s
+                            _retryMs = 5000 + Math.floor(Math.random() * 3000);
+                        } else {
+                            // 6+ consecutive: 8-15s
+                            _retryMs = 8000 + Math.floor(Math.random() * 7000);
+                        }
+                        _ringState('warn', 'Cooling down — ' + Math['round'](_retryMs/1000) + 's', _retryMs);
                         if (b) { clearInterval(b); b = null; }
-                        b = setTimeout(() => { p ? D() : null; }, _randomMs);
+                        b = setTimeout(() => { p ? D() : null; }, _retryMs);
                     }
                 } else {
                     // Other errors (500 etc) — keep normal interval
