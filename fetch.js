@@ -118,10 +118,9 @@
             if (el) {
                 var tok = el.getAttribute('data-token');
                 var ts = parseInt(el.getAttribute('data-ts') || '0');
-                if (tok && tok.length > 20 && !tok.includes('<TOKEN>')) {
+                if (tok && tok.length > 20 && tok.indexOf('<TOKEN>') === -1) {
                     _cachedToken = tok;
                     _tokenLastRead = ts;
-                    console.log('[fetch.js] Token read from DOM:', tok.slice(0, 25) + '...');
                     return tok;
                 }
             }
@@ -129,29 +128,37 @@
 
         // Fallback: try reading from localStorage directly (content script has access)
         try {
+            var bestToken = null;
+            var bestLen = 0;
             for (var i = 0; i < localStorage.length; i++) {
                 var key = localStorage.key(i);
-                if (key && (key.indexOf('idToken') !== -1 || key.indexOf('accessToken') !== -1 ||
-                            key.indexOf('CognitoIdentityServiceProvider') !== -1) &&
-                    key.indexOf('LastAuthUser') === -1) {
+                if (!key) continue;
+                var isTokenKey = (key.indexOf('idToken') !== -1 ||
+                                  key.indexOf('accessToken') !== -1 ||
+                                  (key.indexOf('CognitoIdentityServiceProvider') !== -1 &&
+                                   key.indexOf('LastAuthUser') === -1 &&
+                                   key.indexOf('clockDrift') === -1));
+                if (isTokenKey) {
                     var val = localStorage.getItem(key);
                     if (val && val.length > 100 && val.indexOf('.') !== -1 &&
-                        val.split('.').length === 3) {
-                        // Looks like a JWT token
-                        _cachedToken = 'Bearer ' + val;
-                        _tokenLastRead = Date.now();
-                        console.log('[fetch.js] Token from localStorage:', key, '→', _cachedToken.slice(0, 25) + '...');
-                        return _cachedToken;
+                        val.split('.').length === 3 && val.length > bestLen) {
+                        bestToken = val;
+                        bestLen = val.length;
                     }
                 }
             }
+            if (bestToken) {
+                _cachedToken = 'Bearer ' + bestToken;
+                _tokenLastRead = Date.now();
+                console.log('[fetch.js] Token from localStorage (' + bestLen + ' chars)');
+                return _cachedToken;
+            }
         } catch(e) {}
 
-        // Return cached if we have one
-        if (_cachedToken) return _cachedToken;
+        // Return cached if we have one (even if old)
+        if (_cachedToken && _cachedToken.indexOf('<TOKEN>') === -1) return _cachedToken;
 
-        // Last resort: null (will cause 403 but at least we know why)
-        console.warn('[fetch.js] No auth token available! API calls will fail with 403.');
+        // No token available
         return null;
     }
 
@@ -901,9 +908,9 @@
             // ── Check for valid auth token before making API call ────────────
             var _authTok = _getAuthToken();
             if (!_authTok) {
-                _ringState('warn', 'Waiting for auth token...', 5000);
-                console.log('[fetch.js] No token — skipping this scan cycle. Will retry next interval.');
-                return;
+                // No token captured yet — still try the request with credentials (cookies)
+                // Amazon's API may accept cookie-based auth
+                console.log('[fetch.js] No Bearer token — trying with cookies (credentials: include)');
             }
             // ── DEBUG: log all filter values being sent to API ──────────────────
             console.log('[fetch.js] ══ API QUERY PARAMS ══');
@@ -957,10 +964,10 @@
                     'query': 'query\x20searchJobCardsByLocation($searchJobRequest:\x20SearchJobRequest!)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20searchJobCardsByLocation(searchJobRequest:\x20$searchJobRequest)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20nextToken\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobCards\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobId\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobTitle\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20city\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20distance\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}'
                 }, S = await fetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
                     'method': 'POST',
-                    'headers': {
+                    'credentials': 'include',
+                    'headers': Object.assign({
                         'accept': '*/*',
                         'accept-language': 'en-US,en;q=0.7',
-                        'authorization': _getAuthToken() || 'Bearer <TOKEN>',
                         'content-type': 'application/json',
                         'country': Q['country'],
                         'iscanary': 'false',
@@ -972,7 +979,7 @@
                         'sec-fetch-mode': 'cors',
                         'sec-fetch-site': 'cross-site',
                         'sec-gpc': '1'
-                    },
+                    }, _authTok ? { 'authorization': _authTok } : {}),
                     'body': JSON['stringify'](R)
                 });
             // Deactivated while waiting for network? Hide ring and stop
@@ -996,10 +1003,14 @@
                     b = setTimeout(() => { p ? D() : null; }, 5000);
                 } else if (S['status'] === 403 || S['status'] === 429) {
                     // 403/429: could be rate limited OR token issue
-                    // If we have no valid token, treat as token problem
+                    // If we have no valid token, try to force capture one
                     if (!_cachedToken || _cachedToken.includes('<TOKEN>')) {
-                        console.log('[fetch.js] 403 with no valid token — treating as auth issue');
-                        _ringState('warn', 'No auth token — waiting...', 5000);
+                        console.log('[fetch.js] 403 with no valid token — forcing token scan');
+                        _ringState('warn', 'Authenticating...', 5000);
+                        // Force a fresh localStorage scan right now
+                        _getAuthToken(); // will scan localStorage
+                        // Also try to trigger Amazon's page to make an API call
+                        _invalidateAndRefreshToken();
                         if (b) { clearInterval(b); b = null; }
                         b = setTimeout(() => { p ? D() : null; }, 5000);
                     } else {
@@ -1137,12 +1148,12 @@
             };
             const response = await fetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
                 'method': 'POST',
-                'headers': {
+                'credentials': 'include',
+                'headers': Object.assign({
                     'accept': '*/*',
                     'content-type': 'application/json',
-                    'authorization': _getAuthToken() || 'Bearer <TOKEN>',
                     'country': Q['country']
-                },
+                }, _getAuthToken() ? { 'authorization': _getAuthToken() } : {}),
                 'body': JSON['stringify'](request)
             });
             const data = await response['json']();
