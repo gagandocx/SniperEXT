@@ -1,0 +1,223 @@
+/* ════════════════════════════════════════════════
+   ShiftSniper — SweetAlert2 Theme
+   Matches extension design: diagonal neon stripes
+   Solid dark backgrounds, cyan/purple neon glow
+   ════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
+
+/* ── Overlay: transparent, NO blur ── */
+.swal2-container.swal2-backdrop-show,
+.swal2-backdrop-show {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ── Dialog: matches phone-shell design ── */
+.swal2-popup {
+  /* Same diagonal neon stripe pattern as phone-shell */
+  background:
+    linear-gradient(118deg,
+      transparent 0 18%,
+      rgba(18, 236, 255, 0.09) 18.4%,
+      transparent 20% 47%,
+      rgba(156, 61, 255, 0.08) 47.4%,
+      transparent 49%),
+    linear-gradient(62deg,
+      transparent 0 10%,
+      rgba(28, 238, 255, 0.07) 10.4%,
+      transparent 12% 66%,
+      rgba(151, 71, 255, 0.07) 66.4%,
+      transparent 68%),
+    linear-gradient(180deg, #141826 0%, #0c0e1d 100%) !important;
+  border: 1px solid rgba(22, 245, 255, 0.28) !important;
+  border-radius: 22px !important;
+  padding: 28px 26px 24px !important;
+  overflow: hidden !important;
+  box-shadow:
+    0 0 0 1px rgba(163, 65, 255, 0.18),
+    inset 0 0 40px rgba(22, 245, 255, 0.04),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 30px 60px rgba(0, 0, 0, 0.75) !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  color: #e8edf8 !important;
+  position: relative !important;
+}
+
+/* Diagonal neon light streaks — only on full dialogs, NOT on toasts */
+.swal2-popup:not(.swal2-toast)::before {
+  content: "" !important;
+  position: absolute !important;
+  width: 115px !important; height: 2px !important;
+  left: -35px !important; top: 38% !important;
+  background: linear-gradient(90deg, transparent, rgba(22,245,255,0.6), rgba(163,65,255,0.6), transparent) !important;
+  box-shadow: 120px 60px 0 rgba(22,245,255,0.5), 220px 160px 0 rgba(163,65,255,0.55) !important;
+  transform: rotate(-34deg) !important;
+  pointer-events: none !important; z-index: 0 !important;
+  overflow: hidden !important;
+}
+.swal2-popup:not(.swal2-toast)::after {
+  content: "" !important;
+  position: absolute !important;
+  width: 115px !important; height: 2px !important;
+  right: -30px !important; top: 20% !important;
+  background: linear-gradient(90deg, transparent, rgba(163,65,255,0.6), rgba(22,245,255,0.6), transparent) !important;
+  box-shadow: -180px 220px 0 rgba(22,245,255,0.4), -70px 70px 0 rgba(163,65,255,0.65) !important;
+  transform: rotate(38deg) !important;
+  pointer-events: none !important; z-index: 0 !important;
+  overflow: hidden !important;
+}
+/* Toasts: no pseudo-elements, no shadow artifacts */
+.swal2-toast::before, .swal2-toast::after {
+  display: none !important;
+  content: none !important;
+}
+
+/* ── Title ── */
+.swal2-title {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 18px !important; font-weight: 900 !important;
+  letter-spacing: 0.3px !important; color: #ffffff !important;
+  margin-bottom: 4px !important; padding: 0 0 6px 0 !important;
+  line-height: 1.2 !important; position: relative !important; z-index: 2 !important;
+}
+
+/* ── Body ── */
+.swal2-html-container {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important; color: rgba(199,210,254,0.78) !important;
+  line-height: 1.6 !important; margin: 6px 0 14px !important;
+  position: relative !important; z-index: 2 !important;
+}
+.swal2-html-container b { color: #c7d2fe !important; font-weight: 700 !important; }
+.swal2-html-container small { font-size: 11.5px !important; color: rgba(199,210,254,0.4) !important; }
+.swal2-html-container a { color: #22d3ee !important; text-decoration: underline !important; }
+.swal2-html-container code {
+  background: rgba(22,245,255,0.1) !important; color: #22d3ee !important;
+  padding: 1px 7px !important; border-radius: 4px !important;
+  font-family: 'Courier New', monospace !important; font-size: 11px !important;
+  border: 1px solid rgba(22,245,255,0.2) !important;
+}
+
+/* ── Input label ── */
+.swal2-input-label {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 9.5px !important; font-weight: 800 !important;
+  color: rgba(168, 177, 198, 0.65) !important;
+  text-transform: uppercase !important; letter-spacing: 1.5px !important;
+  margin-bottom: 6px !important; text-align: left !important; width: 100% !important;
+  position: relative !important; z-index: 2 !important;
+}
+
+/* ── Inputs — SOLID dark matching extension ── */
+.swal2-popup .swal2-input,
+.swal2-popup .swal2-select,
+.swal2-popup .swal2-textarea,
+div.swal2-popup input.swal2-input,
+div.swal2-popup select.swal2-select {
+  background: linear-gradient(180deg, rgba(60,66,85,0.75), rgba(28,32,48,0.9)) !important;
+  background-color: rgba(32, 36, 55, 0.95) !important;
+  border: 1px solid rgba(200, 70, 255, 0.6) !important;
+  border-radius: 10px !important; color: #eafaff !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important; font-weight: 500 !important;
+  padding: 10px 14px !important;
+  box-shadow:
+    inset 0 0 10px rgba(23, 255, 255, 0.12),
+    0 0 10px rgba(22, 245, 255, 0.2) !important;
+  margin: 0 !important; width: 100% !important;
+  min-height: 42px !important; height: auto !important;
+  position: relative !important; z-index: 2 !important;
+}
+.swal2-popup .swal2-input:focus,
+.swal2-popup .swal2-select:focus,
+div.swal2-popup input.swal2-input:focus,
+div.swal2-popup select.swal2-select:focus {
+  border-color: rgba(22, 245, 255, 0.8) !important;
+  box-shadow:
+    inset 0 0 12px rgba(22, 245, 255, 0.2),
+    0 0 14px rgba(22, 245, 255, 0.4) !important;
+  outline: none !important; color: #fff !important;
+}
+.swal2-popup .swal2-input::placeholder { color: rgba(168, 177, 198, 0.35) !important; }
+.swal2-popup .swal2-select { cursor: pointer !important; appearance: auto !important; -webkit-appearance: auto !important; }
+.swal2-popup .swal2-select option { background: #151826 !important; color: #eafaff !important; }
+
+/* ── Confirm button ── */
+.swal2-confirm {
+  background: linear-gradient(135deg, #16f5ff 0%, #356dff 55%, #bd2fff 100%) !important;
+  border: none !important; border-radius: 10px !important;
+  color: #ffffff !important; font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important; font-weight: 900 !important;
+  padding: 11px 28px !important;
+  box-shadow: 0 0 14px rgba(22,245,255,0.5), 0 0 20px rgba(163,65,255,0.35) !important;
+  letter-spacing: 0.3px !important; transition: all 0.2s !important;
+  position: relative !important; z-index: 2 !important;
+}
+.swal2-confirm:hover {
+  filter: brightness(1.12) !important;
+  box-shadow: 0 0 20px rgba(22,245,255,0.65), 0 0 28px rgba(163,65,255,0.5) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* ── Cancel button ── */
+.swal2-cancel {
+  background: rgba(40, 44, 60, 0.9) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 10px !important; color: rgba(199, 210, 254, 0.65) !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important; font-weight: 700 !important;
+  padding: 11px 24px !important;
+  box-shadow: inset 0 0 10px rgba(0,0,0,0.3) !important;
+  position: relative !important; z-index: 2 !important;
+}
+.swal2-cancel:hover { background: rgba(55, 60, 82, 0.95) !important; color: #fff !important; }
+.swal2-actions { gap: 10px !important; margin-top: 8px !important; position: relative !important; z-index: 2 !important; }
+
+/* ── Icons ── */
+.swal2-icon { border-width: 2px !important; width: 50px !important; height: 50px !important; margin: 0 auto 14px !important; position: relative !important; z-index: 2 !important; }
+.swal2-icon.swal2-warning { border-color: #f59e0b !important; color: #f59e0b !important; }
+.swal2-icon.swal2-warning .swal2-icon-content { color: #f59e0b !important; }
+.swal2-icon.swal2-success { border-color: #4ade80 !important; color: #4ade80 !important; }
+.swal2-icon.swal2-error   { border-color: #f87171 !important; color: #f87171 !important; }
+.swal2-icon.swal2-info    { border-color: #22d3ee !important; color: #22d3ee !important; }
+.swal2-success-ring { border-color: rgba(74,222,128,0.15) !important; }
+.swal2-success-fix, .swal2-success-line-tip, .swal2-success-line-long { background: #4ade80 !important; }
+.swal2-timer-progress-bar { background: linear-gradient(90deg,#16f5ff,#a341ff) !important; height: 3px !important; }
+.swal2-validation-message {
+  background: rgba(248,113,113,0.1) !important; border: 1px solid rgba(248,113,113,0.25) !important;
+  border-radius: 8px !important; color: #fca5a5 !important;
+  font-family: 'Inter', sans-serif !important; font-size: 12px !important;
+  position: relative !important; z-index: 2 !important;
+}
+
+/* ── Toast ── */
+.swal2-toast.swal2-show {
+  /* Semi-transparent pill — no hard box-shadow that creates black bar on light pages */
+  background: rgba(10, 11, 28, 0.88) !important;
+  border: 1px solid rgba(22,245,255,0.3) !important;
+  border-radius: 22px !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18), 0 0 8px rgba(22,245,255,0.08) !important;
+  padding: 9px 16px !important; max-width: 300px !important;
+}
+.swal2-toast .swal2-title {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 12.5px !important; font-weight: 500 !important;
+  color: rgba(199,210,254,0.92) !important; letter-spacing: 0 !important;
+}
+.swal2-toast .swal2-timer-progress-bar { background: linear-gradient(90deg,#16f5ff,#a341ff) !important; height: 2px !important; }
+
+/* Guide popup — responsive scrollable content */
+.ss-guide-body {
+  max-height: 70vh !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(22,245,255,0.3) transparent;
+  padding-right: 4px !important;
+}
+.ss-guide-body::-webkit-scrollbar { width: 4px; }
+.ss-guide-body::-webkit-scrollbar-track { background: transparent; }
+.ss-guide-body::-webkit-scrollbar-thumb {
+  background: rgba(22,245,255,0.35);
+  border-radius: 3px;
+}

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" style="background:#07071c;color:#dde1f0;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+  <script src="sweetalert.js"></script>
+</head>
+<body style="background:#131620;">
+
+<div class="phone-shell">
+  <div class="popup-card">
+
+    <!-- ── HEADER ─────────────────────────── -->
+    <div class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <div class="scope"></div>
+          <img src="images/logo.png" alt="Logo" class="brand-logo">
+        </div>
+        <div>
+          <h1>SHIFT<span class="purple">SNIPER</span></h1>
+          <p>WAREHOUSE AUTO-APPLY ENGINE</p>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
+        <span class="version" id="version"></span>
+        <span id="access-badge" style="display:none;"></span>
+      </div>
+    </div>
+
+    <!-- ── ACTIVATE HUNTER ────────────────── -->
+    <div class="hunter-panel" id="power-card">
+      <h2>ACTIVATE HUNTER</h2>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="activate">
+        <label class="neon-toggle" for="activate">
+          <span class="toggle-glow"></span>
+          <span class="toggle-knob"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── TARGET CONFIGURATION ───────────── -->
+    <div class="block">
+      <h3>◎ TARGET CONFIGURATION</h3>
+      <div class="config-grid">
+        <div class="field">
+          <span>REGION</span>
+          <select id="city" name="city">
+            <option value="Any City">Any City</option>
+            <option value="Acheson">Acheson</option>
+            <option value="Ajax">Ajax</option>
+            <option value="Balzac">Balzac</option>
+            <option value="Bolton">Bolton</option>
+            <option value="Brampton">Brampton</option>
+            <option value="Calgary">Calgary</option>
+            <option value="Cambridge">Cambridge</option>
+            <option value="Concord">Concord</option>
+            <option value="Dartmouth">Dartmouth</option>
+            <option value="Edmonton">Edmonton</option>
+            <option value="Etobicoke">Etobicoke</option>
+            <option value="Hamilton">Hamilton</option>
+            <option value="Mississauga">Mississauga</option>
+            <option value="Nisku">Nisku</option>
+            <option value="Northborough">Northborough</option>
+            <option value="Ottawa">Ottawa</option>
+            <option value="Rocky View">Rocky View</option>
+            <option value="Scarborough">Scarborough</option>
+            <option value="Sidney">Sidney</option>
+            <option value="ST. Thomas">ST. Thomas</option>
+            <option value="Stoney Creek">Stoney Creek</option>
+            <option value="Toronto">Toronto</option>
+            <option value="Vancouver">Vancouver</option>
+            <option value="Vaughan">Vaughan</option>
+            <option value="Whitby">Whitby</option>
+            <option value="Windsor">Windsor</option>
+            <option value="Belgrade">Belgrade</option>
+          </select>
+        </div>
+        <div class="field">
+          <span>RADIUS</span>
+          <select id="distance" name="distance">
+            <option value="5">5 km</option>
+            <option value="15">15 km</option>
+            <option value="25">25 km</option>
+            <option value="35">35 km</option>
+            <option value="50">50 km</option>
+            <option value="75">75 km</option>
+            <option value="150">150 km</option>
+            <option value="25000">Nationwide</option>
+          </select>
+        </div>
+        <div class="field">
+          <span>SHIFT TYPE</span>
+          <select id="work_hours" name="work_hours">
+            <option value="Any">Any</option>
+            <option value="Full-Time">Full-Time</option>
+            <option value="Part-Time">Part-Time</option>
+          </select>
+        </div>
+      </div>
+      <!-- Scan interval row -->
+      <div class="scan-row">
+        <div class="scan-label">SCAN INTERVAL</div>
+        <div class="scan-inputs">
+          <input type="number" id="fetch_interval_value" min="1" value="2" class="scan-num">
+          <select id="fetch_interval_unit" class="scan-unit">
+            <option value="ms">ms</option>
+            <option value="s" selected>sec</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── AI CAPTCHA SOLVER ───────────────── -->
+    <div class="block">
+      <h3>◈ AI CAPTCHA SOLVER</h3>
+      <div class="captcha-block">
+        <div class="api-field">
+          <span>GROQ API KEY</span>
+          <div class="api-input-row">
+            <input type="password" id="groq_api_key" placeholder="Paste your gsk_... key here"
+                   autocomplete="off">
+            <span id="groq_saved" class="api-badge saved">✓ Saved</span>
+            <span id="groq_error" class="api-badge error">⚠ Must start with gsk_</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TARGET CITIES ──────────────────── -->
+    <div class="block">
+      <h3>◉ TARGET CITIES</h3>
+      <div class="chips" id="tag-input-box">
+        <input type="text" id="city-input" class="city-input" placeholder="Type a city and press Enter">
+      </div>
+      <div class="city-ctrl-row">
+        <button id="any-city-btn" type="button" class="chip any-btn">Any City</button>
+        <span id="clear-all" class="clear-lnk">Clear all</span>
+      </div>
+    </div>
+
+    <!-- ── ACTION BUTTONS ─────────────────── -->
+    <div class="actions">
+      <form id="ais_visa_info" style="display:contents;">
+        <button id="reset_info" type="submit" class="action-btn btn-reset">
+          <span class="btn-svg">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+            </svg>
+          </span>
+          <span>Reset</span>
+        </button>
+      </form>
+      <a href="mailto:harshil.hub@gmail.com?subject=ShiftSniper%20Support&body=Hi%20Harshil%2C%0A%0AI%20need%20help%20with%20ShiftSniper.%0A%0A" class="action-btn btn-support">
+        <span class="btn-svg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+          </svg>
+        </span>
+        <span>Support</span>
+      </a>
+      <button id="guide-btn" type="button" class="action-btn btn-guide">
+        <span class="btn-svg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </span>
+        <span>Guide</span>
+      </button>
+      <a href="#" id="upgrade-btn" class="action-btn btn-upgrade">
+        <span class="btn-svg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+          </svg>
+        </span>
+        <span>Upgrade</span>
+      </a>
+
+    </div>
+
+    <p class="save-note">Changes save automatically</p>
+
+  </div>
+</div>
+
+<script src="content.js"></script>
+</body>
+</html>
