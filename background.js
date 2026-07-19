@@ -19,7 +19,55 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         }
         a['postMessage'](c);
     });
-}), chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
+}),
+
+// ── Proxy Fetch — makes API calls from background (no CORS) ─────────────────
+// Content scripts send { action: 'proxyFetch', url, options } and get back the
+// JSON response. Background service worker is exempt from CORS restrictions.
+chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse) {
+    if (msg['action'] !== 'proxyFetch') return false;
+
+    var url = msg['url'];
+    var options = msg['options'] || {};
+
+    // Ensure we pass through the auth token from storage if available
+    (async function() {
+        try {
+            // Build fetch options — no credentials needed in background (no cookies)
+            // but we DO need the auth token
+            var fetchOpts = {
+                method: options['method'] || 'POST',
+                headers: options['headers'] || {},
+                body: options['body'] || null
+            };
+
+            // If no authorization header provided, try to read from storage
+            var hasAuth = false;
+            var headerKeys = Object.keys(fetchOpts.headers);
+            for (var i = 0; i < headerKeys.length; i++) {
+                if (headerKeys[i].toLowerCase() === 'authorization') { hasAuth = true; break; }
+            }
+            if (!hasAuth) {
+                var stored = await chrome['storage']['local']['get']('__ss_auth_token');
+                if (stored['__ss_auth_token']) {
+                    fetchOpts.headers['authorization'] = stored['__ss_auth_token'];
+                }
+            }
+
+            var response = await fetch(url, fetchOpts);
+            var data = await response.json();
+            sendResponse({ ok: response.ok, status: response.status, data: data });
+        } catch(err) {
+            console.error('[bg] proxyFetch error:', err.message);
+            sendResponse({ ok: false, status: 0, error: err.message });
+        }
+    })();
+
+    return true; // Keep sendResponse channel open for async
+}),
+// ─────────────────────────────────────────────────────────────────────────────
+
+chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
     chrome['action']['disable'](), chrome['declarativeContent']['onPageChanged']['removeRules'](undefined, () => {
         let b = {
                 'conditions': [new chrome['declarativeContent']['PageStateMatcher']({ 'pageUrl': {} })],

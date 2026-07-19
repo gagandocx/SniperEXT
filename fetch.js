@@ -151,6 +151,8 @@
                 _cachedToken = 'Bearer ' + bestToken;
                 _tokenLastRead = Date.now();
                 console.log('[fetch.js] Token from localStorage (' + bestLen + ' chars)');
+                // Persist to storage so background.js can use it for proxy fetch
+                chrome['storage']['local']['set']({ '__ss_auth_token': _cachedToken });
                 return _cachedToken;
             }
         } catch(e) {}
@@ -168,8 +170,29 @@
             _cachedToken = evt.detail.token;
             _tokenLastRead = evt.detail.ts || Date.now();
             console.log('[fetch.js] Token received via event:', _cachedToken.slice(0, 25) + '...');
+            // Also persist to storage so background.js can use it
+            chrome['storage']['local']['set']({ '__ss_auth_token': _cachedToken });
         }
     });
+
+    // ── Proxy fetch through background.js (avoids CORS) ──────────────────────
+    function _bgFetch(url, options) {
+        return new Promise(function(resolve) {
+            chrome.runtime.sendMessage({
+                action: 'proxyFetch',
+                url: url,
+                options: options
+            }, function(response) {
+                if (chrome.runtime.lastError) {
+                    console.error('[fetch.js] proxyFetch error:', chrome.runtime.lastError.message);
+                    resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
+                } else {
+                    resolve(response || { ok: false, status: 0, error: 'no response' });
+                }
+            });
+        });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Token refresh: force Amazon page to make a request so we can capture fresh token ──
     function _invalidateAndRefreshToken() {
@@ -962,28 +985,25 @@
                         }
                     },
                     'query': 'query\x20searchJobCardsByLocation($searchJobRequest:\x20SearchJobRequest!)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20searchJobCardsByLocation(searchJobRequest:\x20$searchJobRequest)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20nextToken\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobCards\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobId\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobTitle\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20city\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20distance\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}'
-                }, S = await fetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
+                }, S = await _bgFetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
                     'method': 'POST',
-                    'credentials': 'include',
                     'headers': Object.assign({
                         'accept': '*/*',
                         'accept-language': 'en-US,en;q=0.7',
                         'content-type': 'application/json',
                         'country': Q['country'],
-                        'iscanary': 'false',
-                        'priority': 'u=1,\x20i',
-                        'sec-ch-ua': '\x22Brave\x22;v=\x22129\x22,\x20\x22Not=A?Brand\x22;v=\x228\x22,\x20\x22Chromium\x22;v=\x22129\x22',
-                        'sec-ch-ua-mobile': '?0',
-                        'sec-ch-ua-platform': '\x22macOS\x22',
-                        'sec-fetch-dest': 'empty',
-                        'sec-fetch-mode': 'cors',
-                        'sec-fetch-site': 'cross-site',
-                        'sec-gpc': '1'
+                        'iscanary': 'false'
                     }, _authTok ? { 'authorization': _authTok } : {}),
                     'body': JSON['stringify'](R)
                 });
             // Deactivated while waiting for network? Hide ring and stop
             if (!p) { _hideRing(); return; }
+            // Handle network/proxy errors
+            if (S['error'] && !S['status']) {
+                console.error('[fetch.js] Network error:', S['error']);
+                _ringState('err', 'Network error', c);
+                return;
+            }
             // Check HTTP status — update the toast if server returned an error
             if (!S['ok']) {
                 if (S['status'] === 401) {
@@ -1045,7 +1065,7 @@
                 _startScan();
                 _ringState('', 'Job Checking...', c); // Restore animation to normal scan interval
             }
-            const T = await S['json'](), U = T['data']['searchJobCardsByLocation']['jobCards'];
+            const T = S['data'], U = T && T['data'] && T['data']['searchJobCardsByLocation'] ? T['data']['searchJobCardsByLocation']['jobCards'] : null;
             if (U && U['length'] > 0x0) {
                 // Rich toast: show ALL found jobs (any city, any range)
                 const _ci = y(i);
@@ -1146,9 +1166,8 @@
                 },
                 'query': 'query\x20searchScheduleCards($searchScheduleRequest:\x20SearchScheduleRequest!)\x20{\x0a\x20\x20searchScheduleCards(searchScheduleRequest:\x20$searchScheduleRequest)\x20{\x0a\x20\x20\x20\x20nextToken\x0a\x20\x20\x20\x20scheduleCards\x20{\x0a\x20\x20\x20\x20\x20\x20jobId\x0a\x20\x20\x20\x20\x20\x20scheduleId\x0a\x20\x20\x20\x20\x20\x20externalJobTitle\x0a\x20\x20\x20\x20\x20\x20city\x0a\x20\x20\x20\x20\x20\x20state\x0a\x20\x20\x20\x20\x20\x20address\x0a\x20\x20\x20\x20\x20\x20postalCode\x0a\x20\x20\x20\x20\x20\x20basePay\x0a\x20\x20\x20\x20\x20\x20basePayL10N\x0a\x20\x20\x20\x20\x20\x20signOnBonus\x0a\x20\x20\x20\x20\x20\x20signOnBonusL10N\x0a\x20\x20\x20\x20\x20\x20surgePay\x0a\x20\x20\x20\x20\x20\x20totalPayRate\x0a\x20\x20\x20\x20\x20\x20totalPayRateL10N\x0a\x20\x20\x20\x20\x20\x20hoursPerWeek\x0a\x20\x20\x20\x20\x20\x20firstDayOnSite\x0a\x20\x20\x20\x20\x20\x20firstDayOnSiteL10N\x0a\x20\x20\x20\x20\x20\x20scheduleText\x0a\x20\x20\x20\x20\x20\x20scheduleType\x0a\x20\x20\x20\x20\x20\x20scheduleTypeL10N\x0a\x20\x20\x20\x20\x20\x20employmentType\x0a\x20\x20\x20\x20\x20\x20employmentTypeL10N\x0a\x20\x20\x20\x20\x20\x20currencyCode\x0a\x20\x20\x20\x20\x20\x20distance\x0a\x20\x20\x20\x20\x20\x20distanceL10N\x0a\x20\x20\x20\x20\x20\x20scheduleBannerText\x0a\x20\x20\x20\x20\x20\x20scheduleBusinessCategory\x0a\x20\x20\x20\x20\x20\x20scheduleBusinessCategoryL10N\x0a\x20\x20\x20\x20\x20\x20hireStartDate\x0a\x20\x20\x20\x20\x20\x20monthlyBasePay\x0a\x20\x20\x20\x20\x20\x20monthlyBasePayL10N\x0a\x20\x20\x20\x20}\x0a\x20\x20}\x0a}'
             };
-            const response = await fetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
+            const response = await _bgFetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
                 'method': 'POST',
-                'credentials': 'include',
                 'headers': Object.assign({
                     'accept': '*/*',
                     'content-type': 'application/json',
@@ -1156,8 +1175,8 @@
                 }, _getAuthToken() ? { 'authorization': _getAuthToken() } : {}),
                 'body': JSON['stringify'](request)
             });
-            const data = await response['json']();
-            return data['data']['searchScheduleCards']['scheduleCards'] || [];
+            const data = response['data'];
+            return data && data['data'] && data['data']['searchScheduleCards'] ? data['data']['searchScheduleCards']['scheduleCards'] || [] : [];
         } catch (err) {
             console['error']('Error\x20fetching\x20schedule\x20details:', err);
             return [];
