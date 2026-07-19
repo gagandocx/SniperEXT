@@ -1,0 +1,109 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "action": {
+    "default_popup": "index.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://hiring.amazon.ca/*",
+        "https://hiring.amazon.com/*",
+        "*://auth.hiring.amazon.com/*",
+        "*://auth.hiring.amazon.ca/*"
+      ],
+      "js": [
+        "notif_block.js",
+        "tokenCapture.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "css": [
+        "/css/sweetalert.css",
+        "css/swal_theme.css"
+      ],
+      "js": [
+        "sweetalert.js",
+        "fetch.js",
+        "Createapp.js"
+      ],
+      "matches": [
+        "https://hiring.amazon.ca/*",
+        "https://hiring.amazon.com/*",
+        "*://auth.hiring.amazon.com/*",
+        "*://auth.hiring.amazon.ca/*"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://auth.hiring.amazon.com/*",
+        "*://auth.hiring.amazon.ca/*"
+      ],
+      "js": [
+        "sweetalert.js",
+        "auth.js"
+      ],
+      "run_at": "document_idle",
+      "css": [
+        "css/swal_theme.css"
+      ]
+    }
+  ],
+  "description": "This Extension Books Amazon Warehouse Shift Automatically",
+  "externally_connectable": {
+    "matches": [
+      "https://hiring.amazon.ca/*",
+      "https://hiring.amazon.com/*",
+      "*://auth.hiring.amazon.com/*",
+      "*://auth.hiring.amazon.ca/*"
+    ]
+  },
+  "host_permissions": [
+    "https://hiring.amazon.ca/*",
+    "https://hiring.amazon.com/*",
+    "*://auth.hiring.amazon.com/*",
+    "*://auth.hiring.amazon.ca/*",
+    "https://mail.google.com/*",
+    "https://api.groq.com/*",
+    "https://*.captcha-sdk.awswaf.com/*",
+    "https://*.awswaf.com/*",
+    "<all_urls>"
+  ],
+  "icons": {
+    "128": "icon128.png",
+    "16": "icon16.png",
+    "48": "icon48.png"
+  },
+  "incognito": "spanning",
+  "manifest_version": 3,
+  "name": "ShiftSniper \u2014 Amazon Warehouse Job Hunter",
+  "permissions": [
+    "tabs",
+    "storage",
+    "activeTab",
+    "declarativeContent",
+    "scripting",
+    "notifications",
+    "debugger"
+  ],
+  "version": "8.7.9.0",
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "images/popup.png",
+        "alert.wav",
+        "images/icon128.png",
+        "css/swal_theme.css"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+@font-face {
+    font-family: Quicksand;
+    src: url(../fonts/Quicksand.ttf);
+}
+
+ :root {
+    --font-fallback: BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-sans;
+}
+
+* {
+    font-family: "Quicksand", var(--font-fallback);
+}
+
+html {
+    width: 250px;
+}
+
+body {
+    background: #fdf8ea;
+    text-align: center;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-weight: bold;
+}
+
+h2 span {
+    font-size: 12px;
+}
+
+p {
+    text-align: justify;
+    font-size: 0.9em;
+}
