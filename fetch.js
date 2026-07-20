@@ -175,21 +175,49 @@
         }
     });
 
-    // ── Proxy fetch through background.js (avoids CORS) ──────────────────────
+    // ── Proxy fetch through MAIN world (same-origin, has cookies + auth) ────
+    // Instead of going through background.js, we dispatch a CustomEvent to
+    // tokenCapture.js which runs in MAIN world (page context). It executes
+    // fetch() with credentials:'include' and the browser treats it as
+    // same-origin — no CORS, full cookie access, exactly like Amazon's own code.
+    var _pendingRequests = {};
+    var _reqCounter = 0;
+
+    // Listen for responses from MAIN world
+    document.addEventListener('__ss_api_response', function(evt) {
+        var detail = evt.detail || {};
+        var id = detail.requestId;
+        if (id && _pendingRequests[id]) {
+            _pendingRequests[id](detail);
+            delete _pendingRequests[id];
+        }
+    });
+
     function _bgFetch(url, options) {
         return new Promise(function(resolve) {
-            chrome.runtime.sendMessage({
-                action: 'proxyFetch',
-                url: url,
-                options: options
-            }, function(response) {
-                if (chrome.runtime.lastError) {
-                    console.error('[fetch.js] proxyFetch error:', chrome.runtime.lastError.message);
-                    resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
-                } else {
-                    resolve(response || { ok: false, status: 0, error: 'no response' });
+            var id = '__ss_' + (++_reqCounter) + '_' + Date.now();
+            var timeout = setTimeout(function() {
+                if (_pendingRequests[id]) {
+                    delete _pendingRequests[id];
+                    console.warn('[fetch.js] API request timed out after 15s');
+                    resolve({ ok: false, status: 0, error: 'timeout' });
                 }
-            });
+            }, 15000);
+
+            _pendingRequests[id] = function(result) {
+                clearTimeout(timeout);
+                resolve(result);
+            };
+
+            // Dispatch request to MAIN world (tokenCapture.js)
+            document.dispatchEvent(new CustomEvent('__ss_api_request', {
+                detail: {
+                    requestId: id,
+                    url: url,
+                    body: options['body'] || null,
+                    headers: options['headers'] || {}
+                }
+            }));
         });
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -930,13 +958,9 @@
                 return;
             _showRing(c);
             if (!p) { _hideRing(); return; } // Re-check after ring shown
-            // ── Check for valid auth token before making API call ────────────
+            // ── Token is handled by MAIN world proxy — just log status ───────
             var _authTok = _getAuthToken();
-            if (!_authTok) {
-                // No token captured yet — still try the request with credentials (cookies)
-                // Amazon's API may accept cookie-based auth
-                console.log('[fetch.js] No Bearer token — trying with cookies (credentials: include)');
-            }
+            console.log('[fetch.js] Token status:', _authTok ? 'found (' + _authTok.length + ' chars)' : 'none (cookies will be used)');
             // ── DEBUG: log all filter values being sent to API ──────────────────
             console.log('[fetch.js] ══ API QUERY PARAMS ══');
             console.log('[fetch.js] City (k):', k, '| Lat:', l, '| Lng:', m);
@@ -988,14 +1012,10 @@
                     },
                     'query': 'query\x20searchJobCardsByLocation($searchJobRequest:\x20SearchJobRequest!)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20searchJobCardsByLocation(searchJobRequest:\x20$searchJobRequest)\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20nextToken\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobCards\x20{\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobId\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20jobTitle\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20city\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20distance\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}\x0a\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}'
                 }, S = await _bgFetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
-                    'method': 'POST',
-                    'headers': Object.assign({
-                        'accept': '*/*',
-                        'accept-language': 'en-US,en;q=0.7',
-                        'content-type': 'application/json',
+                    'headers': {
                         'country': Q['country'],
                         'iscanary': 'false'
-                    }, _authTok ? { 'authorization': _authTok } : {}),
+                    },
                     'body': JSON['stringify'](R)
                 });
             // Deactivated while waiting for network? Hide ring and stop
@@ -1177,12 +1197,9 @@
                 'query': 'query\x20searchScheduleCards($searchScheduleRequest:\x20SearchScheduleRequest!)\x20{\x0a\x20\x20searchScheduleCards(searchScheduleRequest:\x20$searchScheduleRequest)\x20{\x0a\x20\x20\x20\x20nextToken\x0a\x20\x20\x20\x20scheduleCards\x20{\x0a\x20\x20\x20\x20\x20\x20jobId\x0a\x20\x20\x20\x20\x20\x20scheduleId\x0a\x20\x20\x20\x20\x20\x20externalJobTitle\x0a\x20\x20\x20\x20\x20\x20city\x0a\x20\x20\x20\x20\x20\x20state\x0a\x20\x20\x20\x20\x20\x20address\x0a\x20\x20\x20\x20\x20\x20postalCode\x0a\x20\x20\x20\x20\x20\x20basePay\x0a\x20\x20\x20\x20\x20\x20basePayL10N\x0a\x20\x20\x20\x20\x20\x20signOnBonus\x0a\x20\x20\x20\x20\x20\x20signOnBonusL10N\x0a\x20\x20\x20\x20\x20\x20surgePay\x0a\x20\x20\x20\x20\x20\x20totalPayRate\x0a\x20\x20\x20\x20\x20\x20totalPayRateL10N\x0a\x20\x20\x20\x20\x20\x20hoursPerWeek\x0a\x20\x20\x20\x20\x20\x20firstDayOnSite\x0a\x20\x20\x20\x20\x20\x20firstDayOnSiteL10N\x0a\x20\x20\x20\x20\x20\x20scheduleText\x0a\x20\x20\x20\x20\x20\x20scheduleType\x0a\x20\x20\x20\x20\x20\x20scheduleTypeL10N\x0a\x20\x20\x20\x20\x20\x20employmentType\x0a\x20\x20\x20\x20\x20\x20employmentTypeL10N\x0a\x20\x20\x20\x20\x20\x20currencyCode\x0a\x20\x20\x20\x20\x20\x20distance\x0a\x20\x20\x20\x20\x20\x20distanceL10N\x0a\x20\x20\x20\x20\x20\x20scheduleBannerText\x0a\x20\x20\x20\x20\x20\x20scheduleBusinessCategory\x0a\x20\x20\x20\x20\x20\x20scheduleBusinessCategoryL10N\x0a\x20\x20\x20\x20\x20\x20hireStartDate\x0a\x20\x20\x20\x20\x20\x20monthlyBasePay\x0a\x20\x20\x20\x20\x20\x20monthlyBasePayL10N\x0a\x20\x20\x20\x20}\x0a\x20\x20}\x0a}'
             };
             const response = await _bgFetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
-                'method': 'POST',
-                'headers': Object.assign({
-                    'accept': '*/*',
-                    'content-type': 'application/json',
+                'headers': {
                     'country': Q['country']
-                }, _getAuthToken() ? { 'authorization': _getAuthToken() } : {}),
+                },
                 'body': JSON['stringify'](request)
             });
             const data = response['data'];

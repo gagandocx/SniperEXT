@@ -92,7 +92,7 @@
     "notifications",
     "debugger"
   ],
-  "version": "8.7.9.3",
+  "version": "8.8.0.0",
   "web_accessible_resources": [
     {
       "matches": [
