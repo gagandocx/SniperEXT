@@ -117,107 +117,70 @@
             var el = document.getElementById('__ss_token_store');
             if (el) {
                 var tok = el.getAttribute('data-token');
-                var ts = parseInt(el.getAttribute('data-ts') || '0');
                 if (tok && tok.length > 20 && tok.indexOf('<TOKEN>') === -1) {
-                    _cachedToken = tok;
-                    _tokenLastRead = ts;
+                    if (tok !== _cachedToken) {
+                        _cachedToken = tok;
+                        _tokenLastRead = Date.now();
+                        // Sync to chrome.storage for background.js
+                        chrome['storage']['local']['set']({ '__ss_auth_token': tok });
+                    }
                     return tok;
                 }
             }
         } catch(e) {}
 
-        // Fallback: try reading from localStorage directly (content script has access)
-        try {
-            var bestToken = null;
-            var bestLen = 0;
-            for (var i = 0; i < localStorage.length; i++) {
-                var key = localStorage.key(i);
-                if (!key) continue;
-                var isTokenKey = (key.indexOf('idToken') !== -1 ||
-                                  key.indexOf('accessToken') !== -1 ||
-                                  (key.indexOf('CognitoIdentityServiceProvider') !== -1 &&
-                                   key.indexOf('LastAuthUser') === -1 &&
-                                   key.indexOf('clockDrift') === -1));
-                if (isTokenKey) {
-                    var val = localStorage.getItem(key);
-                    if (val && val.length > 100 && val.indexOf('.') !== -1 &&
-                        val.split('.').length === 3 && val.length > bestLen) {
-                        bestToken = val;
-                        bestLen = val.length;
-                    }
-                }
-            }
-            if (bestToken) {
-                _cachedToken = 'Bearer ' + bestToken;
-                _tokenLastRead = Date.now();
-                console.log('[fetch.js] Token from localStorage (' + bestLen + ' chars)');
-                // Persist to storage so background.js can use it for proxy fetch
-                chrome['storage']['local']['set']({ '__ss_auth_token': _cachedToken });
-                return _cachedToken;
-            }
-        } catch(e) {}
-
-        // Return cached if we have one (even if old)
+        // Return cached if available
         if (_cachedToken && _cachedToken.indexOf('<TOKEN>') === -1) return _cachedToken;
-
-        // No token available
         return null;
     }
 
-    // Listen for token events from tokenCapture.js
-    document.addEventListener('__ss_token', function(evt) {
+    // Listen for token events from tokenCapture.js (MAIN world)
+    document.addEventListener('__ss_token_ready', function(evt) {
         if (evt.detail && evt.detail.token) {
             _cachedToken = evt.detail.token;
-            _tokenLastRead = evt.detail.ts || Date.now();
-            console.log('[fetch.js] Token received via event:', _cachedToken.slice(0, 25) + '...');
-            // Also persist to storage so background.js can use it
+            _tokenLastRead = Date.now();
+            console.log('[fetch.js] Token received via event (' + _cachedToken.length + ' chars)');
+            // Store in chrome.storage for background.js proxy
             chrome['storage']['local']['set']({ '__ss_auth_token': _cachedToken });
         }
     });
 
-    // ── Proxy fetch through MAIN world (same-origin, has cookies + auth) ────
-    // Instead of going through background.js, we dispatch a CustomEvent to
-    // tokenCapture.js which runs in MAIN world (page context). It executes
-    // fetch() with credentials:'include' and the browser treats it as
-    // same-origin — no CORS, full cookie access, exactly like Amazon's own code.
+    // ── Proxy fetch — routes through background.js (NO CORS) ───────────────
+    // MAIN world proxy gets CORS blocked because appsync-api is cross-origin.
+    // Background service worker has NO CORS restrictions.
+    // Token is stored in chrome.storage so background can use it.
     var _pendingRequests = {};
     var _reqCounter = 0;
 
-    // Listen for responses from MAIN world
-    document.addEventListener('__ss_api_response', function(evt) {
-        var detail = evt.detail || {};
-        var id = detail.requestId;
-        if (id && _pendingRequests[id]) {
-            _pendingRequests[id](detail);
-            delete _pendingRequests[id];
-        }
-    });
-
     function _bgFetch(url, options) {
         return new Promise(function(resolve) {
-            var id = '__ss_' + (++_reqCounter) + '_' + Date.now();
-            var timeout = setTimeout(function() {
-                if (_pendingRequests[id]) {
-                    delete _pendingRequests[id];
-                    console.warn('[fetch.js] API request timed out after 15s');
-                    resolve({ ok: false, status: 0, error: 'timeout' });
-                }
-            }, 15000);
+            // First, ensure the token from DOM/MAIN world is in chrome.storage
+            var tokenEl = document.getElementById('__ss_token_store');
+            var token = tokenEl ? tokenEl.getAttribute('data-token') : null;
 
-            _pendingRequests[id] = function(result) {
-                clearTimeout(timeout);
-                resolve(result);
-            };
-
-            // Dispatch request to MAIN world (tokenCapture.js)
-            document.dispatchEvent(new CustomEvent('__ss_api_request', {
-                detail: {
-                    requestId: id,
+            function doFetch() {
+                chrome.runtime.sendMessage({
+                    action: 'proxyFetch',
                     url: url,
-                    body: options['body'] || null,
-                    headers: options['headers'] || {}
-                }
-            }));
+                    options: {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: options['body'] || null
+                    }
+                }, function(response) {
+                    if (chrome.runtime.lastError) {
+                        resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
+                    } else {
+                        resolve(response || { ok: false, status: 0, error: 'no response' });
+                    }
+                });
+            }
+
+            if (token) {
+                chrome['storage']['local']['set']({ '__ss_auth_token': token }, doFetch);
+            } else {
+                doFetch();
+            }
         });
     }
     // ─────────────────────────────────────────────────────────────────────────
