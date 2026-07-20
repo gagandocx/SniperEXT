@@ -899,6 +899,14 @@
     async function D() {
         // Don't scan while any popup is showing
         if (window['_ss_banner_shown'] || window['_ss_guide_showing']) return;
+        // ── Ensure filter values are loaded (fallback to defaults) ────────
+        if (typeof l === 'undefined' || l === null) l = 43.653524;
+        if (typeof m === 'undefined' || m === null) m = -79.383907;
+        if (typeof n === 'undefined' || n === null) n = 25;
+        if (typeof k === 'undefined' || k === null) k = 'Toronto';
+        if (typeof o === 'undefined' || o === null) o = 'Any';
+        if (typeof i === 'undefined' || i === null) i = 'Canada';
+        if (typeof c === 'undefined' || !c) c = 3000;
         // ── ACCESS GATE: verify trial/premium before every scan ──
         const _canScan = await _checkAccess();
         if (!_canScan) {
@@ -932,7 +940,7 @@
             console.log('[fetch.js] Country (i):', i, '→', y(i)['locale']);
             console.log('[fetch.js] Active (p):', p, '| Interval (c):', c, 'ms');
             // ─────────────────────────────────────────────────────────────────
-            const O = o !== 'Any' ? [{
+            const O = (o && o !== 'Any') ? [{
                         'key': 'jobType',
                         'val': [o]
                     }] : [], P = new Date()['toISOString']()['split']('T')[0x0], Q = y(i), R = {
@@ -965,10 +973,10 @@
                             'sorters': [],
                             'pageSize': 0x64,
                             'geoQueryClause': {
-                                'lat': l,
-                                'lng': m,
+                                'lat': l || 43.653524,
+                                'lng': m || -79.383907,
                                 'unit': 'km',
-                                'distance': parseInt(n) || 0x5
+                                'distance': parseInt(n) || 25
                             },
                             'consolidateSchedule': !![]
                         }
