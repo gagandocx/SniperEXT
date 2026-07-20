@@ -19,7 +19,7 @@
     var _origXhrOpen = XMLHttpRequest.prototype.open;
     var _origXhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
-    // ── 1. Patch fetch() — intercept token from Amazon's calls ───────────────
+    // ── 1. Patch fetch() — intercept token specifically from GraphQL calls ──
     window.fetch = function(input, init) {
         try {
             var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
@@ -37,7 +37,14 @@
                     }
                 }
                 if (authHeader && authHeader.length > 50) {
-                    _setToken(authHeader, 'fetch-intercept');
+                    // Prefer tokens from GraphQL/AppSync calls (the ones we actually need)
+                    var isGraphQL = (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1);
+                    if (isGraphQL) {
+                        _setToken(authHeader, 'graphql-intercept');
+                    } else if (!_capturedToken) {
+                        // Store non-graphql tokens only as fallback
+                        _setToken(authHeader, 'other-intercept');
+                    }
                 }
             }
         } catch(e) {}
@@ -201,22 +208,52 @@
         }
     });
 
-    // ── Initial scan ─────────────────────────────────────────────────────────
-    // Try to find token as early as possible
+    // ── Try to trigger Amazon's page to call the GraphQL API ───────────────
+    // The page shows "Recommended jobs" but doesn't load data until user
+    // interacts with the search. We need to trigger that to capture the token.
+    function _triggerJobSearch() {
+        if (_capturedToken && _tokenCapturedAt > 0) return; // Already have a token from graphql
+
+        try {
+            // Method 1: Click the "All" tab which triggers a job search API call
+            var allTab = document.querySelector('button[data-test-id="all-tab"]');
+            if (!allTab) allTab = document.querySelector('[data-test-id="all-tab"]');
+            if (!allTab) {
+                // Try finding "All" button text
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    if (buttons[i].textContent.trim() === 'All') {
+                        allTab = buttons[i]; break;
+                    }
+                }
+            }
+            if (allTab) {
+                console.log('[tokenCapture] Clicking "All" tab to trigger GraphQL call...');
+                allTab.click();
+            }
+        } catch(e) {
+            console.log('[tokenCapture] Trigger search failed:', e.message);
+        }
+    }
+
+    // Try triggering after page loads (the "All" tab is usually ready by 3s)
+    setTimeout(_triggerJobSearch, 3000);
+    setTimeout(_triggerJobSearch, 6000);
+
+    // ── Initial deep scan ────────────────────────────────────────────────────
     function _initScan() {
         if (_capturedToken) return;
         _deepScanStorage();
     }
-
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() { setTimeout(_initScan, 1000); });
     } else {
         setTimeout(_initScan, 500);
     }
-    // Re-scan periodically in case Cognito refreshes the token
     setTimeout(_initScan, 3000);
     setTimeout(_initScan, 8000);
+    // Re-scan periodically
     setInterval(function() { if (!_capturedToken || (Date.now() - _tokenCapturedAt > 3000000)) _deepScanStorage(); }, 60000);
 
-    console.log('[tokenCapture] v8.8.0.3 ready — deep token scan + intercept');
+    console.log('[tokenCapture] v8.8.0.6 ready — deep scan + graphql intercept + search trigger');
 })();
