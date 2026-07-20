@@ -993,6 +993,10 @@
                 _ringState('err', 'Network error', c);
                 return;
             }
+            // Log response for debugging
+            if (!S['ok']) {
+                console.error('[fetch.js] API error:', S['status'], JSON.stringify(S['data'] || S['error'] || 'no details').slice(0, 200));
+            }
             // Check HTTP status — update the toast if server returned an error
             if (!S['ok']) {
                 if (S['status'] === 401) {
