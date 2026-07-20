@@ -1,26 +1,29 @@
 // ── Token Capture + API Proxy — MAIN world script ────────────────────────────
-// Runs in MAIN world where it has the SAME origin as hiring.amazon.ca
-// This means fetch() calls from here are same-origin with Amazon's cookies.
+// Runs in MAIN world (same JS context as Amazon's React app).
 //
-// Strategy: Content script (fetch.js) sends a CustomEvent with the query,
-// this script executes fetch() in the page context, then sends results back.
+// v8.8.0.2 approach: Instead of trying to find the token ourselves, we
+// INTERCEPT Amazon's own fetch calls, steal the exact authorization header
+// they use, and replay it in our own calls.
 //
-// IMPORTANT: Amazon's AppSync CORS policy only allows specific headers.
-// We must NOT include custom headers like 'country', 'iscanary' etc. in the
-// fetch call — those trigger a CORS preflight that gets rejected.
-// Only 'content-type' and 'authorization' are in the CORS allowlist.
+// The key insight: Amazon's app makes API calls on page load (for
+// "Recommended jobs", translations, etc). We capture the auth header from
+// those calls and reuse it.
 // ─────────────────────────────────────────────────────────────────────────────
 (function() {
     'use strict';
 
-    // ── Capture the auth token from Amazon's own API calls ───────────────────
     var _capturedToken = null;
+    var _tokenCapturedAt = 0;
+    var _pendingRequests = []; // Queue requests until token is available
     var _origFetch = window.fetch;
 
+    // ── Patch fetch to intercept Amazon's auth token ─────────────────────────
     window.fetch = function(input, init) {
         try {
             var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-            if (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1) {
+            // Capture token from ANY Amazon API call (not just graphql)
+            if (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1 ||
+                url.indexOf('hiring.amazon') !== -1) {
                 var headers = (init && init.headers) || {};
                 var authHeader = null;
                 if (headers instanceof Headers) {
@@ -33,31 +36,121 @@
                         }
                     }
                 }
-                if (authHeader && authHeader.length > 20 && authHeader.indexOf('<TOKEN>') === -1) {
+                if (authHeader && authHeader.length > 50 && authHeader.indexOf('<TOKEN>') === -1) {
+                    var isNew = (_capturedToken !== authHeader);
                     _capturedToken = authHeader;
-                    console.log('[tokenCapture] Intercepted token from page (' + authHeader.length + ' chars)');
-                    // Store in DOM element for content script
-                    var el = document.getElementById('__ss_token_store');
-                    if (!el) {
-                        el = document.createElement('div');
-                        el.id = '__ss_token_store';
-                        el.style.display = 'none';
-                        document.documentElement.appendChild(el);
+                    _tokenCapturedAt = Date.now();
+                    if (isNew) {
+                        console.log('[tokenCapture] Got token from Amazon (' + authHeader.length + ' chars):', authHeader.slice(0, 30) + '...');
+                        // Store in DOM for content script
+                        var el = document.getElementById('__ss_token_store');
+                        if (!el) {
+                            el = document.createElement('div');
+                            el.id = '__ss_token_store';
+                            el.style.display = 'none';
+                            document.documentElement.appendChild(el);
+                        }
+                        el.setAttribute('data-token', authHeader);
+                        el.setAttribute('data-ts', _tokenCapturedAt.toString());
+                        // Process any queued requests
+                        _flushQueue();
                     }
-                    el.setAttribute('data-token', authHeader);
-                    el.setAttribute('data-ts', Date.now().toString());
                 }
             }
         } catch(e) {}
         return _origFetch.apply(this, arguments);
     };
 
-    // ── Get auth token: intercepted > localStorage > null ────────────────────
-    function getToken() {
-        // 1. Use intercepted token from Amazon's own calls (most reliable)
-        if (_capturedToken) return _capturedToken;
+    // ── Process queued requests ──────────────────────────────────────────────
+    function _flushQueue() {
+        if (!_capturedToken || _pendingRequests.length === 0) return;
+        console.log('[tokenCapture] Flushing ' + _pendingRequests.length + ' queued requests');
+        var queue = _pendingRequests.slice();
+        _pendingRequests = [];
+        queue.forEach(function(req) { _executeRequest(req); });
+    }
 
-        // 2. Scan localStorage for Cognito JWT
+    // ── Execute a proxied API request ────────────────────────────────────────
+    function _executeRequest(req) {
+        var headers = { 'content-type': 'application/json' };
+        if (_capturedToken) {
+            headers['authorization'] = _capturedToken;
+        }
+
+        _origFetch(req.url, {
+            method: 'POST',
+            headers: headers,
+            body: req.body
+        })
+        .then(function(response) {
+            return response.text().then(function(text) {
+                var data = null;
+                try { data = JSON.parse(text); } catch(e) { data = { raw: text }; }
+                document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                    detail: { requestId: req.requestId, ok: response.ok, status: response.status, data: data }
+                }));
+            });
+        })
+        .catch(function(err) {
+            document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                detail: { requestId: req.requestId, ok: false, status: 0, error: err.message }
+            }));
+        });
+    }
+
+    // ── Listen for API requests from content script ──────────────────────────
+    document.addEventListener('__ss_api_request', function(evt) {
+        var detail = evt.detail || {};
+        if (!detail.url || !detail.requestId) return;
+
+        var req = { requestId: detail.requestId, url: detail.url, body: detail.body };
+
+        if (_capturedToken) {
+            // Token available — execute immediately
+            _executeRequest(req);
+        } else {
+            // No token yet — queue and wait for Amazon's code to make a call
+            console.log('[tokenCapture] No token yet — queuing request. Waiting for Amazon to authenticate...');
+            _pendingRequests.push(req);
+
+            // Also try to force Amazon's page to make an API call (triggers auth)
+            _triggerPageApiCall();
+
+            // Timeout: if no token after 10s, try localStorage as last resort
+            setTimeout(function() {
+                if (!_capturedToken) {
+                    _tryLocalStorage();
+                    if (_capturedToken) _flushQueue();
+                    else {
+                        // Still nothing — respond with error so fetch.js retries
+                        _pendingRequests.forEach(function(r) {
+                            document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                                detail: { requestId: r.requestId, ok: false, status: 401, error: 'no token available' }
+                            }));
+                        });
+                        _pendingRequests = [];
+                    }
+                }
+            }, 10000);
+        }
+    });
+
+    // ── Try to trigger Amazon's page to make an API call ─────────────────────
+    function _triggerPageApiCall() {
+        try {
+            // Click the "All" tab or trigger a search to force the page to call the API
+            var allTab = document.querySelector('[data-test-id="all-tab"], button[data-test-id*="all"]');
+            if (allTab && !allTab.classList.contains('active')) {
+                // Don't actually click — just dispatch a minor interaction that forces data fetch
+            }
+            // Scroll slightly to trigger lazy loading
+            window.scrollBy(0, 1);
+            setTimeout(function() { window.scrollBy(0, -1); }, 100);
+        } catch(e) {}
+    }
+
+    // ── localStorage fallback ────────────────────────────────────────────────
+    function _tryLocalStorage() {
         try {
             for (var i = 0; i < localStorage.length; i++) {
                 var key = localStorage.key(i);
@@ -67,64 +160,26 @@
                     var val = localStorage.getItem(key);
                     if (val && val.length > 100 && val.split('.').length === 3) {
                         _capturedToken = 'Bearer ' + val;
-                        return _capturedToken;
+                        _tokenCapturedAt = Date.now();
+                        console.log('[tokenCapture] Fallback: token from localStorage (' + val.length + ' chars)');
+                        return;
                     }
                 }
             }
         } catch(e) {}
-
-        return null;
     }
 
-    // ── Listen for API requests from content script ──────────────────────────
-    document.addEventListener('__ss_api_request', function(evt) {
-        var detail = evt.detail || {};
-        var requestId = detail.requestId;
-        var url = detail.url;
-        var body = detail.body;
+    // ── Initial token scan (in case Amazon already made calls) ───────────────
+    // Run after a delay to let Amazon's code initialize
+    setTimeout(function() {
+        if (!_capturedToken) _tryLocalStorage();
+        if (_capturedToken) _flushQueue();
+    }, 3000);
 
-        if (!url || !requestId) return;
+    setTimeout(function() {
+        if (!_capturedToken) _tryLocalStorage();
+        if (_capturedToken) _flushQueue();
+    }, 6000);
 
-        var token = getToken();
-
-        // CRITICAL: Only use CORS-safe headers!
-        // Amazon's AppSync CORS policy only allows:
-        //   content-type, authorization, x-amz-user-agent
-        // Any other header (country, iscanary, etc.) triggers preflight rejection
-        var headers = {
-            'content-type': 'application/json'
-        };
-        if (token) {
-            headers['authorization'] = token;
-        }
-
-        // Use the ORIGINAL fetch (not our patched version) to avoid recursion
-        _origFetch(url, {
-            method: 'POST',
-            headers: headers,
-            body: body
-        })
-        .then(function(response) {
-            var status = response.status;
-            var ok = response.ok;
-            return response.text().then(function(text) {
-                var data = null;
-                try { data = JSON.parse(text); } catch(e) { data = { raw: text }; }
-                return { ok: ok, status: status, data: data };
-            });
-        })
-        .then(function(result) {
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: { requestId: requestId, ok: result.ok, status: result.status, data: result.data }
-            }));
-        })
-        .catch(function(err) {
-            console.error('[tokenCapture] fetch error:', err.message);
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: { requestId: requestId, ok: false, status: 0, error: err.message }
-            }));
-        });
-    });
-
-    console.log('[tokenCapture] MAIN world API proxy ready (CORS-safe headers only)');
+    console.log('[tokenCapture] MAIN world proxy ready — waiting to capture token from Amazon...');
 })();
