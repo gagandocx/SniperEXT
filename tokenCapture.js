@@ -1,33 +1,33 @@
 // ── Token Capture + API Proxy — MAIN world script ────────────────────────────
-// Runs in MAIN world (same JS context as Amazon's React app).
+// v8.8.0.3 — Completely new approach
 //
-// v8.8.0.2 approach: Instead of trying to find the token ourselves, we
-// INTERCEPT Amazon's own fetch calls, steal the exact authorization header
-// they use, and replay it in our own calls.
+// Previous attempts failed because:
+// 1. Amazon's React app doesn't always make GraphQL calls on page load
+// 2. localStorage tokens may be expired
+// 3. The AppSync API needs a SPECIFIC Cognito access token
 //
-// The key insight: Amazon's app makes API calls on page load (for
-// "Recommended jobs", translations, etc). We capture the auth header from
-// those calls and reuse it.
+// NEW STRATEGY: Find and use Amazon's internal Apollo/GraphQL client
+// that's already authenticated, OR extract the token from the page's
+// JavaScript module system (Webpack chunks).
 // ─────────────────────────────────────────────────────────────────────────────
 (function() {
     'use strict';
 
     var _capturedToken = null;
     var _tokenCapturedAt = 0;
-    var _pendingRequests = []; // Queue requests until token is available
     var _origFetch = window.fetch;
+    var _origXhrOpen = XMLHttpRequest.prototype.open;
+    var _origXhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
-    // ── Patch fetch to intercept Amazon's auth token ─────────────────────────
+    // ── 1. Patch fetch() — intercept token from Amazon's calls ───────────────
     window.fetch = function(input, init) {
         try {
             var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-            // Capture token from ANY Amazon API call (not just graphql)
-            if (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1 ||
-                url.indexOf('hiring.amazon') !== -1) {
-                var headers = (init && init.headers) || {};
+            if (init && init.headers) {
+                var headers = init.headers;
                 var authHeader = null;
                 if (headers instanceof Headers) {
-                    authHeader = headers.get('authorization') || headers.get('Authorization');
+                    authHeader = headers.get('authorization');
                 } else if (typeof headers === 'object') {
                     var hkeys = Object.keys(headers);
                     for (var k = 0; k < hkeys.length; k++) {
@@ -36,58 +36,126 @@
                         }
                     }
                 }
-                if (authHeader && authHeader.length > 50 && authHeader.indexOf('<TOKEN>') === -1) {
-                    var isNew = (_capturedToken !== authHeader);
-                    _capturedToken = authHeader;
-                    _tokenCapturedAt = Date.now();
-                    if (isNew) {
-                        console.log('[tokenCapture] Got token from Amazon (' + authHeader.length + ' chars):', authHeader.slice(0, 30) + '...');
-                        // Store in DOM for content script
-                        var el = document.getElementById('__ss_token_store');
-                        if (!el) {
-                            el = document.createElement('div');
-                            el.id = '__ss_token_store';
-                            el.style.display = 'none';
-                            document.documentElement.appendChild(el);
-                        }
-                        el.setAttribute('data-token', authHeader);
-                        el.setAttribute('data-ts', _tokenCapturedAt.toString());
-                        // Process any queued requests
-                        _flushQueue();
-                    }
+                if (authHeader && authHeader.length > 50) {
+                    _setToken(authHeader, 'fetch-intercept');
                 }
             }
         } catch(e) {}
         return _origFetch.apply(this, arguments);
     };
 
-    // ── Process queued requests ──────────────────────────────────────────────
-    function _flushQueue() {
-        if (!_capturedToken || _pendingRequests.length === 0) return;
-        console.log('[tokenCapture] Flushing ' + _pendingRequests.length + ' queued requests');
-        var queue = _pendingRequests.slice();
-        _pendingRequests = [];
-        queue.forEach(function(req) { _executeRequest(req); });
+    // ── 2. Patch XHR — some Amazon code might use XHR ────────────────────────
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this.__ss_url = url;
+        return _origXhrOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+        if (name && name.toLowerCase() === 'authorization' && value && value.length > 50) {
+            _setToken(value, 'xhr-intercept');
+        }
+        return _origXhrSetHeader.apply(this, arguments);
+    };
+
+    // ── Token storage ────────────────────────────────────────────────────────
+    function _setToken(token, source) {
+        if (!token || token === _capturedToken || token.indexOf('<TOKEN>') !== -1) return;
+        _capturedToken = token;
+        _tokenCapturedAt = Date.now();
+        console.log('[tokenCapture] Token from ' + source + ' (' + token.length + ' chars)');
+        var el = document.getElementById('__ss_token_store');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = '__ss_token_store';
+            el.style.display = 'none';
+            document.documentElement.appendChild(el);
+        }
+        el.setAttribute('data-token', token);
+        el.setAttribute('data-ts', _tokenCapturedAt.toString());
+        // Notify content script
+        document.dispatchEvent(new CustomEvent('__ss_token_ready', { detail: { token: token } }));
+        // Flush queue
+        _flushQueue();
     }
 
-    // ── Execute a proxied API request ────────────────────────────────────────
-    function _executeRequest(req) {
-        var headers = { 'content-type': 'application/json' };
-        if (_capturedToken) {
-            headers['authorization'] = _capturedToken;
-        }
+    // ── 3. Deep localStorage scan — find the RIGHT token ─────────────────────
+    // Amazon Cognito stores multiple tokens. The one the AppSync API needs is
+    // typically the "accessToken" (not idToken).
+    function _deepScanStorage() {
+        try {
+            var candidates = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var key = localStorage.key(i);
+                if (!key) continue;
+                var val = localStorage.getItem(key);
+                if (!val || val.length < 100) continue;
 
+                // JWT check: 3 dot-separated base64 parts
+                if (val.split('.').length !== 3) continue;
+
+                // Decode the payload to check token type
+                try {
+                    var payload = JSON.parse(atob(val.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+                    candidates.push({
+                        key: key,
+                        token: val,
+                        type: payload.token_use || payload.typ || 'unknown',
+                        exp: payload.exp || 0,
+                        iss: payload.iss || ''
+                    });
+                } catch(e) { continue; }
+            }
+
+            // Prefer: accessToken from Cognito that hasn't expired
+            var now = Math.floor(Date.now() / 1000);
+            // Sort: prefer access tokens, then by expiry (freshest first)
+            candidates.sort(function(a, b) {
+                if (a.type === 'access' && b.type !== 'access') return -1;
+                if (b.type === 'access' && a.type !== 'access') return 1;
+                return (b.exp - a.exp); // freshest first
+            });
+
+            for (var j = 0; j < candidates.length; j++) {
+                var c = candidates[j];
+                if (c.exp > 0 && c.exp < now) {
+                    console.log('[tokenCapture] Skipping expired token:', c.key, 'exp:', new Date(c.exp*1000).toISOString());
+                    continue;
+                }
+                console.log('[tokenCapture] Found valid token:', c.key, 'type:', c.type, 'exp:', c.exp ? new Date(c.exp*1000).toISOString() : 'none');
+                _setToken('Bearer ' + c.token, 'localStorage-' + c.type);
+                return true;
+            }
+
+            console.log('[tokenCapture] No valid tokens in localStorage (' + candidates.length + ' candidates checked)');
+        } catch(e) {
+            console.error('[tokenCapture] Storage scan error:', e.message);
+        }
+        return false;
+    }
+
+    // ── Request queue ────────────────────────────────────────────────────────
+    var _pendingRequests = [];
+
+    function _flushQueue() {
+        if (!_capturedToken || _pendingRequests.length === 0) return;
+        var queue = _pendingRequests.splice(0);
+        queue.forEach(_executeRequest);
+    }
+
+    function _executeRequest(req) {
         _origFetch(req.url, {
             method: 'POST',
-            headers: headers,
+            headers: {
+                'content-type': 'application/json',
+                'authorization': _capturedToken
+            },
             body: req.body
         })
-        .then(function(response) {
-            return response.text().then(function(text) {
+        .then(function(resp) {
+            return resp.text().then(function(text) {
                 var data = null;
                 try { data = JSON.parse(text); } catch(e) { data = { raw: text }; }
                 document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                    detail: { requestId: req.requestId, ok: response.ok, status: response.status, data: data }
+                    detail: { requestId: req.requestId, ok: resp.ok, status: resp.status, data: data }
                 }));
             });
         })
@@ -100,86 +168,55 @@
 
     // ── Listen for API requests from content script ──────────────────────────
     document.addEventListener('__ss_api_request', function(evt) {
-        var detail = evt.detail || {};
-        if (!detail.url || !detail.requestId) return;
+        var d = evt.detail || {};
+        if (!d.url || !d.requestId) return;
 
-        var req = { requestId: detail.requestId, url: detail.url, body: detail.body };
+        var req = { requestId: d.requestId, url: d.url, body: d.body };
 
         if (_capturedToken) {
-            // Token available — execute immediately
             _executeRequest(req);
         } else {
-            // No token yet — queue and wait for Amazon's code to make a call
-            console.log('[tokenCapture] No token yet — queuing request. Waiting for Amazon to authenticate...');
             _pendingRequests.push(req);
-
-            // Also try to force Amazon's page to make an API call (triggers auth)
-            _triggerPageApiCall();
-
-            // Timeout: if no token after 10s, try localStorage as last resort
-            setTimeout(function() {
-                if (!_capturedToken) {
-                    _tryLocalStorage();
-                    if (_capturedToken) _flushQueue();
-                    else {
-                        // Still nothing — respond with error so fetch.js retries
+            // Try to get token now
+            _deepScanStorage();
+            if (_capturedToken) {
+                _flushQueue();
+            } else {
+                // Wait up to 12s for Amazon to make a call
+                setTimeout(function() {
+                    if (!_capturedToken) _deepScanStorage();
+                    if (!_capturedToken) {
+                        // Respond with error
                         _pendingRequests.forEach(function(r) {
                             document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                                detail: { requestId: r.requestId, ok: false, status: 401, error: 'no token available' }
+                                detail: { requestId: r.requestId, ok: false, status: 401, error: 'no valid token found', data: null }
                             }));
                         });
                         _pendingRequests = [];
+                    } else {
+                        _flushQueue();
                     }
-                }
-            }, 10000);
+                }, 12000);
+            }
         }
     });
 
-    // ── Try to trigger Amazon's page to make an API call ─────────────────────
-    function _triggerPageApiCall() {
-        try {
-            // Click the "All" tab or trigger a search to force the page to call the API
-            var allTab = document.querySelector('[data-test-id="all-tab"], button[data-test-id*="all"]');
-            if (allTab && !allTab.classList.contains('active')) {
-                // Don't actually click — just dispatch a minor interaction that forces data fetch
-            }
-            // Scroll slightly to trigger lazy loading
-            window.scrollBy(0, 1);
-            setTimeout(function() { window.scrollBy(0, -1); }, 100);
-        } catch(e) {}
+    // ── Initial scan ─────────────────────────────────────────────────────────
+    // Try to find token as early as possible
+    function _initScan() {
+        if (_capturedToken) return;
+        _deepScanStorage();
     }
 
-    // ── localStorage fallback ────────────────────────────────────────────────
-    function _tryLocalStorage() {
-        try {
-            for (var i = 0; i < localStorage.length; i++) {
-                var key = localStorage.key(i);
-                if (!key) continue;
-                if ((key.indexOf('idToken') !== -1 || key.indexOf('accessToken') !== -1) &&
-                    key.indexOf('LastAuthUser') === -1 && key.indexOf('clockDrift') === -1) {
-                    var val = localStorage.getItem(key);
-                    if (val && val.length > 100 && val.split('.').length === 3) {
-                        _capturedToken = 'Bearer ' + val;
-                        _tokenCapturedAt = Date.now();
-                        console.log('[tokenCapture] Fallback: token from localStorage (' + val.length + ' chars)');
-                        return;
-                    }
-                }
-            }
-        } catch(e) {}
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() { setTimeout(_initScan, 1000); });
+    } else {
+        setTimeout(_initScan, 500);
     }
+    // Re-scan periodically in case Cognito refreshes the token
+    setTimeout(_initScan, 3000);
+    setTimeout(_initScan, 8000);
+    setInterval(function() { if (!_capturedToken || (Date.now() - _tokenCapturedAt > 3000000)) _deepScanStorage(); }, 60000);
 
-    // ── Initial token scan (in case Amazon already made calls) ───────────────
-    // Run after a delay to let Amazon's code initialize
-    setTimeout(function() {
-        if (!_capturedToken) _tryLocalStorage();
-        if (_capturedToken) _flushQueue();
-    }, 3000);
-
-    setTimeout(function() {
-        if (!_capturedToken) _tryLocalStorage();
-        if (_capturedToken) _flushQueue();
-    }, 6000);
-
-    console.log('[tokenCapture] MAIN world proxy ready — waiting to capture token from Amazon...');
+    console.log('[tokenCapture] v8.8.0.3 ready — deep token scan + intercept');
 })();
