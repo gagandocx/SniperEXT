@@ -303,8 +303,8 @@
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 0x2, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
-        // Minimum 3 seconds — page needs a moment to process refresh
-        return Math.max(_ms, 3000);
+        // Minimum 1 second — for aggressive shift sniping
+        return Math.max(_ms, 1000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
@@ -938,9 +938,9 @@
             var _authTok = _getAuthToken();
             // Only log every 20th cycle to reduce spam
             if (_reqCounter % 20 === 1) {
-                console.log('[SS] Scanning... City:', k, '| Distance:', n, 'km | Country:', i);
+                // Silent — no logging during normal operation
             }
-            // ── DEBUG: log filter values (only on first call) ─────────────────────
+            // Only log on first cycle or when config changes
             if (_reqCounter <= 1) {
                 console.log('[SS] Config: City=' + k + ' Lat=' + l + ' Lng=' + m + ' Dist=' + n + ' Type=' + o + ' Country=' + i);
             }

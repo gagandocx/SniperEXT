@@ -98,8 +98,6 @@
 
                         if (jobCards.length > 0) {
                             console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
-                        } else {
-                            console.log('[SS] ✓ Checked — 0 jobs available');
                         }
 
                         document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
@@ -123,8 +121,8 @@
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // Return intercepted data if fresh (< 15s)
-        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 15000)) {
+        // Return intercepted data if fresh (< 4s — matches scan interval)
+        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 4000)) {
             document.dispatchEvent(new CustomEvent('__ss_api_response', {
                 detail: {
                     requestId: detail.requestId, ok: true, status: 200,
@@ -148,7 +146,7 @@
     var _refreshCount = 0;
 
     function _triggerRefresh() {
-        if (Date.now() - _lastRefreshTs < 2000) return;
+        if (Date.now() - _lastRefreshTs < 1000) return;
         _lastRefreshTs = Date.now();
         _refreshCount++;
 
