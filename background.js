@@ -287,88 +287,119 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return !![];
     }
     if (a['action'] === 'fetchGmailOTP') {
-        // Read OTP directly from Gmail DOM — check ALL Gmail tabs for the one with Amazon email
+        // Read OTP from Gmail — focus each tab to wake from Chrome throttle, click email if needed
         chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
             if (!tabs || !tabs.length) {
-                console.log('[bg] No Gmail tab open — please keep Gmail open');
+                console.log('[bg] No Gmail tab open');
                 c({ 'otp': null });
                 return;
             }
 
-            // Try each Gmail tab until we find the OTP
-            var tabIndex = 0;
-            function tryNextTab() {
-                if (tabIndex >= tabs.length) {
-                    console.log('[bg] OTP not found in any of', tabs.length, 'Gmail tabs');
-                    c({ 'otp': null });
-                    return;
+            // Remember active tab to restore later
+            chrome['tabs']['query']({ 'active': true, 'currentWindow': true }, function(activeTabs) {
+                var previousTabId = activeTabs && activeTabs[0] ? activeTabs[0]['id'] : null;
+                var tabIndex = 0;
+
+                function restoreTab() {
+                    if (previousTabId) chrome['tabs']['update'](previousTabId, { 'active': true });
                 }
-                var tabId = tabs[tabIndex]['id'];
-                tabIndex++;
 
-                chrome['scripting']['executeScript']({
-                    'target': { 'tabId': tabId },
-                    'func': function() {
-                        // Method 1: Scan ALL visible text — fastest, catches inbox preview
-                        const bodyText = document.body.innerText || '';
-                        const lines = bodyText.split('\n');
-                        for (let i = 0; i < lines.length; i++) {
-                            if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
-                                const chunk = lines.slice(i, i + 5).join(' ');
-                                const m = chunk.match(/\b(\d{6})\b/);
-                                if (m) return m[1];
-                            }
-                        }
-
-                        // Method 2: Gmail inbox rows — preview snippet contains OTP
-                        const rows = document.querySelectorAll('tr.zA, [data-thread-id], [data-legacy-thread-id]');
-                        for (const row of rows) {
-                            const txt = row.innerText || '';
-                            if (/amazon.*verification|verification.*amazon/i.test(txt)) {
-                                const m = txt.match(/\b(\d{6})\b/);
-                                if (m) return m[1];
-                            }
-                        }
-
-                        // Method 3: Open email body
-                        const emailBody = document.querySelector('.a3s.aiL, .ii.gt, [data-message-id] .a3s');
-                        if (emailBody) {
-                            const m = (emailBody.innerText || '').match(/\b(\d{6})\b/);
-                            if (m) return m[1];
-                        }
-
-                        // Method 4: Brute force — find any 6-digit code near "Amazon" in full page
-                        const full = bodyText.replace(/\s+/g, ' ');
-                        const amazonIdx = full.toLowerCase().indexOf('amazon jobs verification');
-                        if (amazonIdx > -1) {
-                            const region = full.slice(amazonIdx, amazonIdx + 200);
-                            const m = region.match(/\b(\d{6})\b/);
-                            if (m) return m[1];
-                        }
-
-                        // Method 5: Find ALL 6-digit codes on the page near "verification code"
-                        const allMatches = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
-                        if (allMatches.length > 0) return allMatches[0][1];
-
-                        return null;
-                    }
-                }, function(results) {
-                    if (chrome['runtime']['lastError']) {
-                        // This tab failed — try next
-                        tryNextTab();
+                function tryNextTab() {
+                    if (tabIndex >= tabs.length) {
+                        restoreTab();
+                        c({ 'otp': null });
                         return;
                     }
-                    const otp = results && results[0] && results[0]['result'];
-                    if (otp) {
-                        console.log('[bg] Gmail OTP found in tab', tabIndex, ':', otp);
-                        c({ 'otp': otp });
-                    } else {
-                        // Not in this tab — try next
-                        tryNextTab();
-                    }
-                });
-            }
-            tryNextTab();
+                    var gmailTabId = tabs[tabIndex]['id'];
+                    tabIndex++;
+
+                    // Focus tab to wake it from Chrome throttle
+                    chrome['tabs']['update'](gmailTabId, { 'active': true }, function() {
+                        // Wait 1.5s for tab to wake and render
+                        setTimeout(function() {
+                            chrome['scripting']['executeScript']({
+                                'target': { 'tabId': gmailTabId },
+                                'func': function() {
+                                    // Check open email bodies first
+                                    var openBodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
+                                    for (var el of openBodies) {
+                                        var t = el.textContent || '';
+                                        if (/amazon|verification/i.test(t)) {
+                                            var m = t.match(/\b(\d{6})\b/);
+                                            if (m) return m[1];
+                                        }
+                                    }
+                                    // Scan inbox preview snippets
+                                    var bodyText = document.body.innerText || '';
+                                    var lines = bodyText.split('\n');
+                                    for (var i = 0; i < lines.length; i++) {
+                                        if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
+                                            var chunk = lines.slice(i, i + 5).join(' ');
+                                            var m2 = chunk.match(/\b(\d{6})\b/);
+                                            if (m2) return m2[1];
+                                        }
+                                    }
+                                    // Find and CLICK the Amazon email thread
+                                    var rows = document.querySelectorAll('tr.zA, [data-legacy-thread-id]');
+                                    for (var row of rows) {
+                                        var txt = row.textContent || '';
+                                        if (/amazon.*verification|verification.*amazon|amazon jobs/i.test(txt)) {
+                                            var m3 = txt.match(/\b(\d{6})\b/);
+                                            if (m3) return m3[1];
+                                            row.click();
+                                            return 'CLICKED';
+                                        }
+                                    }
+                                    // Brute force
+                                    var full = bodyText.replace(/\s+/g, ' ');
+                                    var allM = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
+                                    if (allM.length > 0) return allM[0][1];
+                                    return null;
+                                }
+                            }, function(results) {
+                                if (chrome['runtime']['lastError']) { tryNextTab(); return; }
+                                var result = results && results[0] && results[0]['result'];
+
+                                if (result === 'CLICKED') {
+                                    // Email clicked — wait 2s for render then re-read
+                                    setTimeout(function() {
+                                        chrome['scripting']['executeScript']({
+                                            'target': { 'tabId': gmailTabId },
+                                            'func': function() {
+                                                var bodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
+                                                for (var el of bodies) {
+                                                    var t = el.textContent || '';
+                                                    if (/amazon|verification/i.test(t)) {
+                                                        var m = t.match(/\b(\d{6})\b/);
+                                                        if (m) return m[1];
+                                                    }
+                                                }
+                                                var full = (document.body.innerText || '').replace(/\s+/g, ' ');
+                                                var m2 = full.match(/Amazon Jobs[^\d]{0,50}(\d{6})/i);
+                                                if (m2) return m2[1];
+                                                var m3 = full.match(/\b(\d{6})\b/);
+                                                return m3 ? m3[1] : null;
+                                            }
+                                        }, function(r2) {
+                                            var otp = r2 && r2[0] && r2[0]['result'];
+                                            if (otp) {
+                                                console.log('[bg] OTP after click:', otp);
+                                                restoreTab();
+                                                c({ 'otp': otp });
+                                            } else { tryNextTab(); }
+                                        });
+                                    }, 2000);
+                                } else if (result && result.length === 6) {
+                                    console.log('[bg] OTP found:', result);
+                                    restoreTab();
+                                    c({ 'otp': result });
+                                } else { tryNextTab(); }
+                            });
+                        }, 1500);
+                    });
+                }
+                tryNextTab();
+            });
         });
         return !![];
     }
