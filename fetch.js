@@ -1651,43 +1651,32 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
     function doRedirect(reason) {
         console.log('[fetch.js] Redirecting to jobSearch. Reason:', reason);
         chrome.storage.local.remove('_pendingJobRedirect');
-        chrome.storage.local.set({ '_pendingJobReloadUntil': Date.now() + 3 * 60 * 1000 });
+        chrome.storage.local.remove('_pendingJobReloadUntil');
         window.location.replace(_jobSearchUrl);
-        // Reload page after 1 minute to fully start job checking
-        setTimeout(function() {
-            if (window.location.href.includes('app#/jobSearch')) {
-                console.log('[fetch.js] 1-min post-login reload to start job checking');
-                window.location.reload();
-            }
-        }, 60000);
     }
 
-    // After jobSearch page loads: handle post-login activation
+    // After jobSearch page loads: handle post-login activation + click "All" tab
     if (window.location.href.includes('app#/jobSearch')) {
         chrome.storage.local.get(['_pendingJobReloadUntil', '__ap'], function(d) {
-            var now = Date.now();
+            // Clear any reload flags to prevent loops
+            chrome.storage.local.remove('_pendingJobReloadUntil');
 
-            // Case 1: Fresh post-login load — set the reload flag if not already activated
-            if (d._pendingJobReloadUntil && now < d._pendingJobReloadUntil) {
-                chrome.storage.local.remove('_pendingJobReloadUntil');
-                if (!d.__ap) {
-                    // Extension is not activated yet — reload page to trigger popup
-                    console.log('[fetch.js] Post-login: extension not activated, reloading in 3s');
-                    setTimeout(function() { window.location.reload(); }, 3000);
-                } else {
-                    // Extension IS activated — just send activate message to start D()
-                    console.log('[fetch.js] Post-login: extension activated, sending activate msg');
-                    chrome.runtime.sendMessage({ action: 'activate', status: true });
-                }
-                return;
-            }
-
-            // Case 2: Normal load — if activated but not running, send activate
+            // Always activate and click "All" tab after arriving at jobSearch
             if (d.__ap) {
-                console.log('[fetch.js] jobSearch loaded with active=true — sending activate');
+                console.log('[fetch.js] jobSearch loaded — activating + clicking All tab');
+                chrome.runtime.sendMessage({ action: 'activate', status: true });
+
+                // Click "All" tab after 2s to start searching all jobs
                 setTimeout(function() {
-                    chrome.runtime.sendMessage({ action: 'activate', status: true });
-                }, 1000);
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (btns[i].textContent.trim() === 'All') {
+                            btns[i].click();
+                            console.log('[fetch.js] Clicked "All" tab');
+                            break;
+                        }
+                    }
+                }, 2000);
             }
         });
     }
