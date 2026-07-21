@@ -63,56 +63,74 @@
 
     // ── Trigger Amazon's page to make a job search ──────────────────────────
     // Called by content script when it wants fresh job data
+    var _lastTriggerMethod = 0;
     document.addEventListener('__ss_trigger_search', function(evt) {
-        var detail = evt.detail || {};
         console.log('[tokenCapture] Triggering page search...');
 
-        // Strategy 1: Click the "All" tab to trigger a fresh search
+        // Rotate between methods to avoid caching
+        _lastTriggerMethod = (_lastTriggerMethod + 1) % 4;
+
+        if (_lastTriggerMethod === 0) {
+            // Method 1: Toggle Recommended → All (forces re-fetch)
+            try {
+                var recTab = document.querySelector('[data-test-id="recommended-tab"]');
+                if (!recTab) {
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (btns[i].textContent.trim() === 'Recommended') { recTab = btns[i]; break; }
+                    }
+                }
+                if (recTab) {
+                    recTab.click();
+                    console.log('[tokenCapture] Clicked Recommended tab');
+                    // Then click All after 1.5s to trigger fresh search
+                    setTimeout(function() {
+                        var allTab = document.querySelector('[data-test-id="all-tab"]');
+                        if (!allTab) {
+                            var btns2 = document.querySelectorAll('button');
+                            for (var j = 0; j < btns2.length; j++) {
+                                if (btns2[j].textContent.trim() === 'All') { allTab = btns2[j]; break; }
+                            }
+                        }
+                        if (allTab) { allTab.click(); console.log('[tokenCapture] Clicked All tab'); }
+                    }, 1500);
+                    return;
+                }
+            } catch(e) {}
+        }
+
+        if (_lastTriggerMethod === 1) {
+            // Method 2: Navigate to jobSearch with cache-bust param
+            try {
+                var newHash = '#/jobSearch?_t=' + Date.now();
+                if (window.location.hash !== newHash) {
+                    window.location.hash = newHash;
+                    console.log('[tokenCapture] Hash navigation: ' + newHash);
+                    setTimeout(function() { window.location.hash = '#/jobSearch'; }, 800);
+                    return;
+                }
+            } catch(e) {}
+        }
+
+        if (_lastTriggerMethod === 2) {
+            // Method 3: Full page reload (forces fresh data)
+            try {
+                console.log('[tokenCapture] Triggering soft reload via hash');
+                window.location.href = window.location.pathname + '#/jobSearch';
+                // Don't actually reload — just trigger React router
+            } catch(e) {}
+        }
+
+        // Method 4 (fallback): Click All tab anyway
         try {
             var allTab = document.querySelector('[data-test-id="all-tab"]');
             if (!allTab) {
                 var buttons = document.querySelectorAll('button');
-                for (var i = 0; i < buttons.length; i++) {
-                    if (buttons[i].textContent.trim() === 'All') {
-                        allTab = buttons[i]; break;
-                    }
+                for (var k = 0; k < buttons.length; k++) {
+                    if (buttons[k].textContent.trim() === 'All') { allTab = buttons[k]; break; }
                 }
             }
-            if (allTab) {
-                allTab.click();
-                console.log('[tokenCapture] Clicked All tab');
-                return;
-            }
-        } catch(e) {}
-
-        // Strategy 2: Click "Search all jobs" button
-        try {
-            var searchBtn = document.querySelector('[data-test-id="search-all-jobs-button"]');
-            if (!searchBtn) {
-                var links = document.querySelectorAll('a, button');
-                for (var j = 0; j < links.length; j++) {
-                    if (/search all jobs/i.test(links[j].textContent)) {
-                        searchBtn = links[j]; break;
-                    }
-                }
-            }
-            if (searchBtn) {
-                searchBtn.click();
-                console.log('[tokenCapture] Clicked Search All Jobs');
-                return;
-            }
-        } catch(e) {}
-
-        // Strategy 3: Trigger a URL hash change to force React to re-fetch
-        try {
-            var hash = window.location.hash;
-            if (hash.includes('jobSearch')) {
-                window.location.hash = '#/jobSearch?_r=' + Date.now();
-                setTimeout(function() {
-                    window.location.hash = '#/jobSearch';
-                }, 300);
-                console.log('[tokenCapture] Triggered hash navigation');
-            }
+            if (allTab) { allTab.click(); console.log('[tokenCapture] Clicked All tab'); }
         } catch(e) {}
     });
 
@@ -121,8 +139,8 @@
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // If we have recent job data (< 30s old), return it immediately
-        if (_lastJobData && (Date.now() - _lastJobDataTs < 30000)) {
+        // If we have ANY cached data (even 0 jobs), return it — that's valid
+        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 60000)) {
             console.log('[tokenCapture] Returning cached job data (' + _lastJobData.length + ' jobs)');
             document.dispatchEvent(new CustomEvent('__ss_api_response', {
                 detail: {
@@ -139,15 +157,17 @@
                     }
                 }
             }));
+            // Also trigger a fresh search in background for next cycle
+            document.dispatchEvent(new CustomEvent('__ss_trigger_search', { detail: {} }));
         } else {
             // No cached data — trigger a search and wait
             document.dispatchEvent(new CustomEvent('__ss_trigger_search', { detail: {} }));
 
-            // Wait up to 8s for the intercepted response
+            // Wait up to 10s for the intercepted response
             var _waited = 0;
             var _pollInterval = setInterval(function() {
                 _waited += 500;
-                if (_lastJobData && (Date.now() - _lastJobDataTs < 5000)) {
+                if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 10000)) {
                     clearInterval(_pollInterval);
                     document.dispatchEvent(new CustomEvent('__ss_api_response', {
                         detail: {
@@ -157,10 +177,16 @@
                             data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
                         }
                     }));
-                } else if (_waited >= 8000) {
+                } else if (_waited >= 10000) {
                     clearInterval(_pollInterval);
+                    // Return empty result instead of error (no jobs is valid)
                     document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                        detail: { requestId: detail.requestId, ok: false, status: 0, error: 'no job data intercepted' }
+                        detail: {
+                            requestId: detail.requestId,
+                            ok: true,
+                            status: 200,
+                            data: { data: { searchJobCardsByLocation: { jobCards: [], nextToken: null } } }
+                        }
                     }));
                 }
             }, 500);
