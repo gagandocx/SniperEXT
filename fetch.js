@@ -146,19 +146,16 @@
     });
 
     // ── Listen for job data intercepted from Amazon's own API calls ─────────
-    // Instead of making our own API calls (which WAF blocks), we intercept
-    // the responses from Amazon's own React-initiated GraphQL calls.
     document.addEventListener('__ss_jobs_found', function(evt) {
         var detail = evt.detail || {};
         var jobCards = detail.jobCards || [];
         if (jobCards.length > 0 && p) {
-            console.log('[fetch.js] Jobs intercepted from Amazon:', jobCards.length);
-            // Process jobs through existing matching logic
+            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS — processing!');
             G(jobCards);
         }
     });
 
-    // ── Proxy fetch — triggers Amazon page search + intercepts response ─────
+    // ── Proxy fetch — asks MAIN world for data ───────────────────────────────
     var _pendingRequests = {};
     var _reqCounter = 0;
 
@@ -177,16 +174,15 @@
             var timeout = setTimeout(function() {
                 if (_pendingRequests[id]) {
                     delete _pendingRequests[id];
-                    resolve({ ok: false, status: 0, error: 'timeout - triggering page search' });
+                    resolve({ ok: true, status: 200, data: { data: { searchJobCardsByLocation: { jobCards: [], nextToken: null } } } });
                 }
-            }, 15000);
+            }, 12000);
 
             _pendingRequests[id] = function(result) {
                 clearTimeout(timeout);
                 resolve(result);
             };
 
-            // Ask MAIN world to trigger a search + return intercepted data
             document.dispatchEvent(new CustomEvent('__ss_api_request', {
                 detail: { requestId: id, url: url, body: options['body'] || null }
             }));
@@ -307,8 +303,8 @@
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 0x2, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
-        // Minimum 3 seconds to avoid Amazon rate limiting
-        return Math.max(_ms, 3000);
+        // Minimum 10 seconds — page needs time to fetch fresh data
+        return Math.max(_ms, 10000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
@@ -940,14 +936,14 @@
             if (!p) { _hideRing(); return; } // Re-check after ring shown
             // ── Token is handled by MAIN world proxy — just log status ───────
             var _authTok = _getAuthToken();
-            console.log('[fetch.js] Token status:', _authTok ? 'found (' + _authTok.length + ' chars)' : 'none (cookies will be used)');
-            // ── DEBUG: log all filter values being sent to API ──────────────────
-            console.log('[fetch.js] ══ API QUERY PARAMS ══');
-            console.log('[fetch.js] City (k):', k, '| Lat:', l, '| Lng:', m);
-            console.log('[fetch.js] Distance (n):', n, 'km → parsed:', parseInt(n) || 5);
-            console.log('[fetch.js] JobType/WorkHours (o):', o, '→', o !== 'Any' ? 'FILTERING by ' + o : 'Any (no filter)');
-            console.log('[fetch.js] Country (i):', i, '→', y(i)['locale']);
-            console.log('[fetch.js] Active (p):', p, '| Interval (c):', c, 'ms');
+            // Only log every 20th cycle to reduce spam
+            if (_reqCounter % 20 === 1) {
+                console.log('[SS] Scanning... City:', k, '| Distance:', n, 'km | Country:', i);
+            }
+            // ── DEBUG: log filter values (only on first call) ─────────────────────
+            if (_reqCounter <= 1) {
+                console.log('[SS] Config: City=' + k + ' Lat=' + l + ' Lng=' + m + ' Dist=' + n + ' Type=' + o + ' Country=' + i);
+            }
             // ─────────────────────────────────────────────────────────────────
             const O = (o && o !== 'Any') ? [{
                         'key': 'jobType',
