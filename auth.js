@@ -262,8 +262,26 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
             const gData = await gResp.json();
             const resp = (gData.choices && gData.choices[0] && gData.choices[0].message && gData.choices[0].message.content || '').trim();
             console.log('[auth.js] Groq:', resp);
-            const fm = resp.match(/FINAL ANSWER:\s*([0-9][0-9,\s]*|NONE)/i);
-            if (fm && fm[1].toUpperCase() !== 'NONE') {
+            // Try multiple parsing patterns — different models format answers differently
+            var fm = resp.match(/FINAL ANSWER:\s*([0-9][0-9,\s]*|NONE)/i);
+            if (!fm) {
+                // Fallback: look for "matching cells are X, Y, Z" pattern
+                fm = resp.match(/matching cells?\s*(?:are|:)\s*([0-9][0-9,\s]*)/i);
+            }
+            if (!fm) {
+                // Fallback: look for any line that's just numbers at the end
+                fm = resp.match(/(?:^|\n)\s*([0-9](?:[,\s]+[0-9])*)\s*\.?\s*$/m);
+            }
+            if (!fm) {
+                // Fallback: find all single digits mentioned after "select" or "answer" or "match"
+                var answerSection = resp.slice(resp.toLowerCase().lastIndexOf('select'));
+                if (answerSection.length < 5) answerSection = resp.slice(-200);
+                var digits = answerSection.match(/\b([1-9])\b/g);
+                if (digits && digits.length >= 1 && digits.length <= 6) {
+                    fm = [null, digits.join(',')];
+                }
+            }
+            if (fm && fm[1] && fm[1].toUpperCase() !== 'NONE') {
                 positions = fm[1].split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= 9);
             }
         } catch(e) { toast('❌ Groq error: ' + e.message, 5000); return; }
