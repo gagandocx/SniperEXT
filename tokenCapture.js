@@ -1,225 +1,76 @@
-// ── Token Capture + API Proxy — MAIN world script ────────────────────────────
-// v8.8.0.3 — Completely new approach
+// ── Token Capture + Response Interceptor — MAIN world script ─────────────────
+// v8.8.2.0 — COMPLETELY NEW APPROACH
 //
-// Previous attempts failed because:
-// 1. Amazon's React app doesn't always make GraphQL calls on page load
-// 2. localStorage tokens may be expired
-// 3. The AppSync API needs a SPECIFIC Cognito access token
+// AWS WAF blocks ALL our own fetch() calls — even from MAIN world with the
+// same cookies. WAF uses behavioral/fingerprint detection that distinguishes
+// our programmatic requests from Amazon's React-initiated requests.
 //
-// NEW STRATEGY: Find and use Amazon's internal Apollo/GraphQL client
-// that's already authenticated, OR extract the token from the page's
-// JavaScript module system (Webpack chunks).
+// NEW STRATEGY: Don't make our own API calls. Instead:
+// 1. Intercept RESPONSES from Amazon's own GraphQL calls
+// 2. Trigger Amazon's page to search for jobs (click search, change filters)
+// 3. Read the job data from intercepted responses
+// 4. Send results to content script for processing
 // ─────────────────────────────────────────────────────────────────────────────
 (function() {
     'use strict';
 
-    var _capturedToken = null;
-    var _tokenCapturedAt = 0;
     var _origFetch = window.fetch;
-    var _origXhrOpen = XMLHttpRequest.prototype.open;
-    var _origXhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    var _lastJobData = null;
+    var _lastJobDataTs = 0;
 
-    // ── 1. Patch fetch() — intercept token specifically from GraphQL calls ──
+    // ── Intercept ALL fetch responses — steal job data from Amazon's calls ───
     window.fetch = function(input, init) {
-        try {
-            var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-            if (init && init.headers) {
-                var headers = init.headers;
-                var authHeader = null;
-                if (headers instanceof Headers) {
-                    authHeader = headers.get('authorization');
-                } else if (typeof headers === 'object') {
-                    var hkeys = Object.keys(headers);
-                    for (var k = 0; k < hkeys.length; k++) {
-                        if (hkeys[k].toLowerCase() === 'authorization') {
-                            authHeader = headers[hkeys[k]]; break;
-                        }
+        var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+        var result = _origFetch.apply(this, arguments);
+
+        // Only intercept GraphQL responses
+        if (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1) {
+            result.then(function(response) {
+                // Clone the response so Amazon's code can still read it
+                var clone = response.clone();
+                clone.json().then(function(data) {
+                    // Check if this response contains job cards
+                    if (data && data.data && data.data.searchJobCardsByLocation) {
+                        var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
+                        console.log('[tokenCapture] Intercepted job data:', jobCards.length, 'jobs');
+                        _lastJobData = jobCards;
+                        _lastJobDataTs = Date.now();
+
+                        // Send to content script
+                        document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
+                            detail: {
+                                jobCards: jobCards,
+                                nextToken: data.data.searchJobCardsByLocation.nextToken,
+                                timestamp: Date.now()
+                            }
+                        }));
                     }
-                }
-                if (authHeader && authHeader.length > 50) {
-                    // Prefer tokens from GraphQL/AppSync calls (the ones we actually need)
-                    var isGraphQL = (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1);
-                    if (isGraphQL) {
-                        _setToken(authHeader, 'graphql-intercept');
-                    } else if (!_capturedToken) {
-                        // Store non-graphql tokens only as fallback
-                        _setToken(authHeader, 'other-intercept');
+                    // Also check for schedule data
+                    if (data && data.data && data.data.searchScheduleCards) {
+                        document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
+                            detail: {
+                                scheduleCards: data.data.searchScheduleCards.scheduleCards || [],
+                                timestamp: Date.now()
+                            }
+                        }));
                     }
-                }
-            }
-        } catch(e) {}
-        return _origFetch.apply(this, arguments);
+                }).catch(function() {});
+            }).catch(function() {});
+        }
+
+        return result;
     };
 
-    // ── 2. Patch XHR — some Amazon code might use XHR ────────────────────────
-    XMLHttpRequest.prototype.open = function(method, url) {
-        this.__ss_url = url;
-        return _origXhrOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-        if (name && name.toLowerCase() === 'authorization' && value && value.length > 50) {
-            _setToken(value, 'xhr-intercept');
-        }
-        return _origXhrSetHeader.apply(this, arguments);
-    };
+    // ── Trigger Amazon's page to make a job search ──────────────────────────
+    // Called by content script when it wants fresh job data
+    document.addEventListener('__ss_trigger_search', function(evt) {
+        var detail = evt.detail || {};
+        console.log('[tokenCapture] Triggering page search...');
 
-    // ── Token storage ────────────────────────────────────────────────────────
-    function _setToken(token, source) {
-        if (!token || token === _capturedToken || token.indexOf('<TOKEN>') !== -1) return;
-        _capturedToken = token;
-        _tokenCapturedAt = Date.now();
-        console.log('[tokenCapture] Token from ' + source + ' (' + token.length + ' chars)');
-        var el = document.getElementById('__ss_token_store');
-        if (!el) {
-            el = document.createElement('div');
-            el.id = '__ss_token_store';
-            el.style.display = 'none';
-            document.documentElement.appendChild(el);
-        }
-        el.setAttribute('data-token', token);
-        el.setAttribute('data-ts', _tokenCapturedAt.toString());
-        // Notify content script
-        document.dispatchEvent(new CustomEvent('__ss_token_ready', { detail: { token: token } }));
-        // Flush queue
-        _flushQueue();
-    }
-
-    // ── 3. Deep localStorage scan — find the RIGHT token ─────────────────────
-    // Amazon Cognito stores multiple tokens. The one the AppSync API needs is
-    // typically the "accessToken" (not idToken).
-    function _deepScanStorage() {
+        // Strategy 1: Click the "All" tab to trigger a fresh search
         try {
-            var candidates = [];
-            for (var i = 0; i < localStorage.length; i++) {
-                var key = localStorage.key(i);
-                if (!key) continue;
-                var val = localStorage.getItem(key);
-                if (!val || val.length < 100) continue;
-
-                // JWT check: 3 dot-separated base64 parts
-                if (val.split('.').length !== 3) continue;
-
-                // Decode the payload to check token type
-                try {
-                    var payload = JSON.parse(atob(val.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-                    candidates.push({
-                        key: key,
-                        token: val,
-                        type: payload.token_use || payload.typ || 'unknown',
-                        exp: payload.exp || 0,
-                        iss: payload.iss || ''
-                    });
-                } catch(e) { continue; }
-            }
-
-            // Prefer: accessToken from Cognito that hasn't expired
-            var now = Math.floor(Date.now() / 1000);
-            // Sort: prefer access tokens, then by expiry (freshest first)
-            candidates.sort(function(a, b) {
-                if (a.type === 'access' && b.type !== 'access') return -1;
-                if (b.type === 'access' && a.type !== 'access') return 1;
-                return (b.exp - a.exp); // freshest first
-            });
-
-            for (var j = 0; j < candidates.length; j++) {
-                var c = candidates[j];
-                if (c.exp > 0 && c.exp < now) {
-                    console.log('[tokenCapture] Skipping expired token:', c.key, 'exp:', new Date(c.exp*1000).toISOString());
-                    continue;
-                }
-                console.log('[tokenCapture] Found valid token:', c.key, 'type:', c.type, 'exp:', c.exp ? new Date(c.exp*1000).toISOString() : 'none');
-                _setToken('Bearer ' + c.token, 'localStorage-' + c.type);
-                return true;
-            }
-
-            console.log('[tokenCapture] No valid tokens in localStorage (' + candidates.length + ' candidates checked)');
-        } catch(e) {
-            console.error('[tokenCapture] Storage scan error:', e.message);
-        }
-        return false;
-    }
-
-    // ── Request queue ────────────────────────────────────────────────────────
-    var _pendingRequests = [];
-
-    function _flushQueue() {
-        if (!_capturedToken || _pendingRequests.length === 0) return;
-        var queue = _pendingRequests.splice(0);
-        queue.forEach(_executeRequest);
-    }
-
-    function _executeRequest(req) {
-        _origFetch(req.url, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-                'authorization': _capturedToken
-            },
-            body: req.body
-        })
-        .then(function(resp) {
-            return resp.text().then(function(text) {
-                var data = null;
-                try { data = JSON.parse(text); } catch(e) { data = { raw: text }; }
-                document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                    detail: { requestId: req.requestId, ok: resp.ok, status: resp.status, data: data }
-                }));
-            });
-        })
-        .catch(function(err) {
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: { requestId: req.requestId, ok: false, status: 0, error: err.message }
-            }));
-        });
-    }
-
-    // ── Listen for API requests from content script ──────────────────────────
-    document.addEventListener('__ss_api_request', function(evt) {
-        var d = evt.detail || {};
-        if (!d.url || !d.requestId) return;
-
-        var req = { requestId: d.requestId, url: d.url, body: d.body };
-
-        if (_capturedToken) {
-            _executeRequest(req);
-        } else {
-            _pendingRequests.push(req);
-            // Try to get token now
-            _deepScanStorage();
-            if (_capturedToken) {
-                _flushQueue();
-            } else {
-                // Wait up to 12s for Amazon to make a call
-                setTimeout(function() {
-                    if (!_capturedToken) _deepScanStorage();
-                    if (!_capturedToken) {
-                        // Respond with error
-                        _pendingRequests.forEach(function(r) {
-                            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                                detail: { requestId: r.requestId, ok: false, status: 401, error: 'no valid token found', data: null }
-                            }));
-                        });
-                        _pendingRequests = [];
-                    } else {
-                        _flushQueue();
-                    }
-                }, 12000);
-            }
-        }
-    });
-
-    // ── Try to trigger Amazon's page to call the GraphQL API ───────────────
-    // The page shows "Recommended jobs" but doesn't load data until user
-    // interacts with the search. We need to trigger that to capture the token.
-    function _triggerJobSearch() {
-        if (_capturedToken && _tokenCapturedAt > 0) return; // Already have a token from graphql
-
-        try {
-            // Method 1: Click the "All" tab which triggers a job search API call
-            var allTab = document.querySelector('button[data-test-id="all-tab"]');
-            if (!allTab) allTab = document.querySelector('[data-test-id="all-tab"]');
+            var allTab = document.querySelector('[data-test-id="all-tab"]');
             if (!allTab) {
-                // Try finding "All" button text
                 var buttons = document.querySelectorAll('button');
                 for (var i = 0; i < buttons.length; i++) {
                     if (buttons[i].textContent.trim() === 'All') {
@@ -228,32 +79,93 @@
                 }
             }
             if (allTab) {
-                console.log('[tokenCapture] Clicking "All" tab to trigger GraphQL call...');
                 allTab.click();
+                console.log('[tokenCapture] Clicked All tab');
+                return;
             }
-        } catch(e) {
-            console.log('[tokenCapture] Trigger search failed:', e.message);
+        } catch(e) {}
+
+        // Strategy 2: Click "Search all jobs" button
+        try {
+            var searchBtn = document.querySelector('[data-test-id="search-all-jobs-button"]');
+            if (!searchBtn) {
+                var links = document.querySelectorAll('a, button');
+                for (var j = 0; j < links.length; j++) {
+                    if (/search all jobs/i.test(links[j].textContent)) {
+                        searchBtn = links[j]; break;
+                    }
+                }
+            }
+            if (searchBtn) {
+                searchBtn.click();
+                console.log('[tokenCapture] Clicked Search All Jobs');
+                return;
+            }
+        } catch(e) {}
+
+        // Strategy 3: Trigger a URL hash change to force React to re-fetch
+        try {
+            var hash = window.location.hash;
+            if (hash.includes('jobSearch')) {
+                window.location.hash = '#/jobSearch?_r=' + Date.now();
+                setTimeout(function() {
+                    window.location.hash = '#/jobSearch';
+                }, 300);
+                console.log('[tokenCapture] Triggered hash navigation');
+            }
+        } catch(e) {}
+    });
+
+    // ── Also respond to direct API request attempts with cached data ─────────
+    document.addEventListener('__ss_api_request', function(evt) {
+        var detail = evt.detail || {};
+        if (!detail.requestId) return;
+
+        // If we have recent job data (< 30s old), return it immediately
+        if (_lastJobData && (Date.now() - _lastJobDataTs < 30000)) {
+            console.log('[tokenCapture] Returning cached job data (' + _lastJobData.length + ' jobs)');
+            document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                detail: {
+                    requestId: detail.requestId,
+                    ok: true,
+                    status: 200,
+                    data: {
+                        data: {
+                            searchJobCardsByLocation: {
+                                jobCards: _lastJobData,
+                                nextToken: null
+                            }
+                        }
+                    }
+                }
+            }));
+        } else {
+            // No cached data — trigger a search and wait
+            document.dispatchEvent(new CustomEvent('__ss_trigger_search', { detail: {} }));
+
+            // Wait up to 8s for the intercepted response
+            var _waited = 0;
+            var _pollInterval = setInterval(function() {
+                _waited += 500;
+                if (_lastJobData && (Date.now() - _lastJobDataTs < 5000)) {
+                    clearInterval(_pollInterval);
+                    document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                        detail: {
+                            requestId: detail.requestId,
+                            ok: true,
+                            status: 200,
+                            data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
+                        }
+                    }));
+                } else if (_waited >= 8000) {
+                    clearInterval(_pollInterval);
+                    document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                        detail: { requestId: detail.requestId, ok: false, status: 0, error: 'no job data intercepted' }
+                    }));
+                }
+            }, 500);
         }
-    }
+    });
 
-    // Try triggering after page loads (the "All" tab is usually ready by 3s)
-    setTimeout(_triggerJobSearch, 3000);
-    setTimeout(_triggerJobSearch, 6000);
-
-    // ── Initial deep scan ────────────────────────────────────────────────────
-    function _initScan() {
-        if (_capturedToken) return;
-        _deepScanStorage();
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() { setTimeout(_initScan, 1000); });
-    } else {
-        setTimeout(_initScan, 500);
-    }
-    setTimeout(_initScan, 3000);
-    setTimeout(_initScan, 8000);
-    // Re-scan periodically
-    setInterval(function() { if (!_capturedToken || (Date.now() - _tokenCapturedAt > 3000000)) _deepScanStorage(); }, 60000);
-
-    console.log('[tokenCapture] v8.8.0.6 ready — deep scan + graphql intercept + search trigger');
+    console.log('[tokenCapture] v8.8.2.0 — Response interceptor mode (no own API calls)');
 })();

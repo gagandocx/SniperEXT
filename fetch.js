@@ -145,13 +145,23 @@
         }
     });
 
-    // ── Proxy fetch — routes through MAIN world (has WAF cookies) ───────────
-    // Background.js gets WAFForbiddenException because it lacks browser
-    // fingerprint/WAF cookies. MAIN world has same context as Amazon's page.
+    // ── Listen for job data intercepted from Amazon's own API calls ─────────
+    // Instead of making our own API calls (which WAF blocks), we intercept
+    // the responses from Amazon's own React-initiated GraphQL calls.
+    document.addEventListener('__ss_jobs_found', function(evt) {
+        var detail = evt.detail || {};
+        var jobCards = detail.jobCards || [];
+        if (jobCards.length > 0 && p) {
+            console.log('[fetch.js] Jobs intercepted from Amazon:', jobCards.length);
+            // Process jobs through existing matching logic
+            G(jobCards);
+        }
+    });
+
+    // ── Proxy fetch — triggers Amazon page search + intercepts response ─────
     var _pendingRequests = {};
     var _reqCounter = 0;
 
-    // Listen for responses from MAIN world
     document.addEventListener('__ss_api_response', function(evt) {
         var detail = evt.detail || {};
         var id = detail.requestId;
@@ -167,22 +177,18 @@
             var timeout = setTimeout(function() {
                 if (_pendingRequests[id]) {
                     delete _pendingRequests[id];
-                    resolve({ ok: false, status: 0, error: 'timeout' });
+                    resolve({ ok: false, status: 0, error: 'timeout - triggering page search' });
                 }
-            }, 20000);
+            }, 15000);
 
             _pendingRequests[id] = function(result) {
                 clearTimeout(timeout);
                 resolve(result);
             };
 
-            // Dispatch to MAIN world (tokenCapture.js) which has WAF cookies
+            // Ask MAIN world to trigger a search + return intercepted data
             document.dispatchEvent(new CustomEvent('__ss_api_request', {
-                detail: {
-                    requestId: id,
-                    url: url,
-                    body: options['body'] || null
-                }
+                detail: { requestId: id, url: url, body: options['body'] || null }
             }));
         });
     }
