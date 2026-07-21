@@ -20,6 +20,7 @@
             'z-index:2147483647;pointer-events:none;font-family:Inter,system-ui,sans-serif;}' +
             '#ss-ring.ss-warn{border-color:rgba(245,158,11,0.5);box-shadow:0 4px 16px rgba(0,0,0,0.45),0 0 10px rgba(245,158,11,0.12);}' +
             '#ss-ring.ss-err{border-color:rgba(239,68,68,0.5);box-shadow:0 4px 16px rgba(0,0,0,0.45),0 0 10px rgba(239,68,68,0.12);}' +
+            '#ss-ring.ss-ok{border-color:rgba(34,197,94,0.5);box-shadow:0 4px 16px rgba(0,0,0,0.45),0 0 10px rgba(34,197,94,0.12);}' +
             '#ss-ring .ss-w{position:relative;width:30px;height:30px;flex-shrink:0;}' +
             '#ss-ring svg{position:absolute;top:0;left:0;width:100%;height:100%;transform:rotate(-90deg);}' +
             '#ss-ring .ss-trk{fill:none;stroke:rgba(22,245,255,0.15);stroke-width:3;}' +
@@ -27,10 +28,12 @@
             'stroke-dasharray:60;stroke-dashoffset:60;animation:ssSweep var(--ss-dur,2s) linear infinite;}' +
             '#ss-ring.ss-warn .ss-arc{stroke:url(#ssGW);}' +
             '#ss-ring.ss-err .ss-arc{stroke:url(#ssGE);}' +
+            '#ss-ring.ss-ok .ss-arc{stroke:url(#ssGOK);}' +
             '#ss-ring .ss-ico{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:12px;}' +
             '#ss-ring .ss-lbl{font-size:13.5px;font-weight:600;color:rgba(199,210,254,0.9);white-space:nowrap;letter-spacing:0.2px;}' +
             '#ss-ring.ss-warn .ss-lbl{color:rgba(253,186,116,0.9);}' +
             '#ss-ring.ss-err .ss-lbl{color:rgba(252,165,165,0.9);}' +
+            '#ss-ring.ss-ok .ss-lbl{color:rgba(134,239,172,0.9);}' +
             '@keyframes ssSweep{0%{stroke-dashoffset:60}100%{stroke-dashoffset:0}}';
         document.head.appendChild(st);
         var el = document.createElement('div');
@@ -44,6 +47,8 @@
             '<stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#fbbf24"/></linearGradient>' +
             '<linearGradient id="ssGE" x1="0%" y1="0%" x2="100%" y2="0%">' +
             '<stop offset="0%" stop-color="#ef4444"/><stop offset="100%" stop-color="#f87171"/></linearGradient>' +
+            '<linearGradient id="ssGOK" x1="0%" y1="0%" x2="100%" y2="0%">' +
+            '<stop offset="0%" stop-color="#22c55e"/><stop offset="100%" stop-color="#4ade80"/></linearGradient>' +
             '</defs>' +
             '<circle class="ss-trk" cx="11" cy="11" r="9"/>' +
             '<circle class="ss-arc" cx="11" cy="11" r="9"/>' +
@@ -301,7 +306,7 @@
         const O = await chrome['storage']['local']['get']([
                 'fetchIntervalValue',
                 'fetchIntervalUnit'
-            ]), P = parseInt(O['fetchIntervalValue']) || 0x2, Q = O['fetchIntervalUnit'] || 's';
+            ]), P = parseInt(O['fetchIntervalValue']) || 3, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
         // Minimum 1 second — for aggressive shift sniping
         return Math.max(_ms, 1000);
@@ -1073,6 +1078,21 @@
                 _ringState('', 'Job Checking...', c); // Restore animation to normal scan interval
             }
             const T = S['data'], U = T && T['data'] && T['data']['searchJobCardsByLocation'] ? T['data']['searchJobCardsByLocation']['jobCards'] : null;
+
+            // ── Real-time status indicator (green/red) ───────────────────────
+            (function() {
+                var storeEl = document.getElementById('__ss_token_store');
+                var lastIntercept = storeEl ? parseInt(storeEl.getAttribute('data-ts') || '0') : 0;
+                var freshData = lastIntercept > 0 && (Date.now() - lastIntercept) < (c * 3); // Fresh if within 3x interval
+                if (freshData) {
+                    _ringState('ok', 'Active - 0 shifts', c);
+                } else if (lastIntercept > 0) {
+                    _ringState('warn', 'Stale data - checking...', c);
+                } else {
+                    _ringState('err', 'No response yet', c);
+                }
+            })();
+
             if (U && U['length'] > 0x0) {
                 // Rich toast: show ALL found jobs (any city, any range)
                 const _ci = y(i);

@@ -127,7 +127,7 @@ document['addEventListener']('DOMContentLoaded', async function () {
             'cityTags',
             'fetchIntervalValue',
             'fetchIntervalUnit'
-        ]), e = d['selectedCity'] || 'Toronto', f = d['distance'] || '5', g = d['jobType'] || 'Any', h = d['__ap'] || ![], i = d['cityTags'] || [], j = d['fetchIntervalValue'] || '2', k = d['fetchIntervalUnit'] || 's';
+        ]), e = d['selectedCity'] || 'Toronto', f = d['distance'] || '5', g = d['jobType'] || 'Any', h = d['__ap'] || ![], i = d['cityTags'] || [], j = d['fetchIntervalValue'] || '3', k = d['fetchIntervalUnit'] || 's';
     await chrome['storage']['local']['get']()['then'](A => {
         const B = document['getElementById']('activate');
         if (B) {
@@ -246,7 +246,7 @@ document['addEventListener']('DOMContentLoaded', async function () {
             'lng': -79.383907,
             'distance': '5',
             'jobType': 'Any',
-            'fetchIntervalValue': '2',
+            'fetchIntervalValue': '3',
             'fetchIntervalUnit': 's'
         }), chrome['runtime']['sendMessage']({ 'action': 'logout' }), B['classList']['toggle']('btn-success'), B['innerText'] = 'Success', await new Promise(C => setTimeout(C, 0x3e8)), B['classList']['toggle']('btn-success'), B['removeAttribute']('disabled'), B['innerText'] = 'Reset';
     });
