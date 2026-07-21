@@ -26,7 +26,7 @@
         var result = _origJson.call(this);
 
         // Check if this response is from the GraphQL endpoint
-        if (resp.url && (resp.url.indexOf('appsync-api') !== -1 || resp.url.indexOf('graphql') !== -1)) {
+        if (resp.url && (resp.url.indexOf('appsync') !== -1 || resp.url.indexOf('graphql') !== -1)) {
             result.then(function(data) {
                 _interceptCount++;
                 if (data && data.data && data.data.searchJobCardsByLocation) {
@@ -73,20 +73,42 @@
         var resp = this;
         var result = _origText.call(this);
 
-        if (resp.url && (resp.url.indexOf('appsync-api') !== -1 || resp.url.indexOf('graphql') !== -1)) {
+        if (resp.url && (resp.url.indexOf('appsync') !== -1 || resp.url.indexOf('graphql') !== -1)) {
             result.then(function(text) {
                 try {
                     var data = JSON.parse(text);
+                    _interceptCount++;
                     if (data && data.data && data.data.searchJobCardsByLocation) {
                         var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
                         _lastJobData = jobCards;
                         _lastJobDataTs = Date.now();
                         _jobsFoundCount = jobCards.length;
-                        if (jobCards.length > 0) {
-                            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND (via text)!');
+
+                        // Store proof
+                        var el = document.getElementById('__ss_token_store');
+                        if (!el) {
+                            el = document.createElement('div');
+                            el.id = '__ss_token_store';
+                            el.style.display = 'none';
+                            document.documentElement.appendChild(el);
                         }
+                        el.setAttribute('data-jobs', jobCards.length.toString());
+                        el.setAttribute('data-ts', Date.now().toString());
+                        el.setAttribute('data-intercepts', _interceptCount.toString());
+
+                        if (jobCards.length > 0) {
+                            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
+                        } else {
+                            console.log('[SS] ✓ Checked — 0 jobs available');
+                        }
+
                         document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
                             detail: { jobCards: jobCards, timestamp: Date.now() }
+                        }));
+                    }
+                    if (data && data.data && data.data.searchScheduleCards) {
+                        document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
+                            detail: { scheduleCards: data.data.searchScheduleCards.scheduleCards || [], timestamp: Date.now() }
                         }));
                     }
                 } catch(e) {}
