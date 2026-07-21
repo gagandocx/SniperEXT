@@ -121,7 +121,7 @@
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // Return intercepted data if fresh (< 4s — matches scan interval)
+        // Return intercepted data if fresh (< scan interval + 1s buffer)
         if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 4000)) {
             document.dispatchEvent(new CustomEvent('__ss_api_response', {
                 detail: {
@@ -141,7 +141,7 @@
         }
     });
 
-    // ── Trigger page refresh ─────────────────────────────────────────────────
+    // ── Trigger page refresh — HARD RELOAD for guaranteed fresh data ─────────
     var _lastRefreshTs = 0;
     var _refreshCount = 0;
 
@@ -150,29 +150,10 @@
         _lastRefreshTs = Date.now();
         _refreshCount++;
 
-        if (_refreshCount % 3 === 1) {
-            // Toggle Recommended → All
-            try {
-                var btns = document.querySelectorAll('button');
-                var recTab = null, allTab = null;
-                for (var i = 0; i < btns.length; i++) {
-                    var txt = btns[i].textContent.trim();
-                    if (txt === 'Recommended') recTab = btns[i];
-                    if (txt === 'All') allTab = btns[i];
-                }
-                if (recTab && allTab) {
-                    recTab.click();
-                    setTimeout(function() { allTab.click(); }, 800);
-                    return;
-                }
-            } catch(e) {}
-        }
-
-        // URL refresh
-        if (window.location.hash.includes('jobSearch')) {
-            var base = window.location.href.split('?')[0];
-            window.location.replace(base + '?r=' + Date.now());
-        }
+        // Hard reload — guarantees fresh data from Amazon's server
+        // No caching, no stale React state, no missed shifts
+        console.log('[SS] Refreshing page for fresh data...');
+        window.location.reload();
     }
 
     console.log('[SS] v8.9.1.0 ready — Response.prototype interceptor active');
