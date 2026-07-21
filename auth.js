@@ -228,7 +228,7 @@
                     signal: ctl.signal, method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + groqKey },
                     body: JSON.stringify({
-                        model: 'openai/gpt-oss-120b',
+                        model: 'qwen/qwen3.6-27b',
                         max_tokens: 500, temperature: 0.1,
                         messages: [
                             { role: 'system', content: 'You are a precise CAPTCHA solver. You MUST describe every single cell before answering. Always end with FINAL ANSWER: on its own line.' },
