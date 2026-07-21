@@ -145,42 +145,45 @@
         }
     });
 
-    // ── Proxy fetch — routes through background.js (NO CORS) ───────────────
-    // MAIN world proxy gets CORS blocked because appsync-api is cross-origin.
-    // Background service worker has NO CORS restrictions.
-    // Token is stored in chrome.storage so background can use it.
+    // ── Proxy fetch — routes through MAIN world (has WAF cookies) ───────────
+    // Background.js gets WAFForbiddenException because it lacks browser
+    // fingerprint/WAF cookies. MAIN world has same context as Amazon's page.
     var _pendingRequests = {};
     var _reqCounter = 0;
 
+    // Listen for responses from MAIN world
+    document.addEventListener('__ss_api_response', function(evt) {
+        var detail = evt.detail || {};
+        var id = detail.requestId;
+        if (id && _pendingRequests[id]) {
+            _pendingRequests[id](detail);
+            delete _pendingRequests[id];
+        }
+    });
+
     function _bgFetch(url, options) {
         return new Promise(function(resolve) {
-            // First, ensure the token from DOM/MAIN world is in chrome.storage
-            var tokenEl = document.getElementById('__ss_token_store');
-            var token = tokenEl ? tokenEl.getAttribute('data-token') : null;
+            var id = '__ss_' + (++_reqCounter) + '_' + Date.now();
+            var timeout = setTimeout(function() {
+                if (_pendingRequests[id]) {
+                    delete _pendingRequests[id];
+                    resolve({ ok: false, status: 0, error: 'timeout' });
+                }
+            }, 20000);
 
-            function doFetch() {
-                chrome.runtime.sendMessage({
-                    action: 'proxyFetch',
+            _pendingRequests[id] = function(result) {
+                clearTimeout(timeout);
+                resolve(result);
+            };
+
+            // Dispatch to MAIN world (tokenCapture.js) which has WAF cookies
+            document.dispatchEvent(new CustomEvent('__ss_api_request', {
+                detail: {
+                    requestId: id,
                     url: url,
-                    options: {
-                        method: 'POST',
-                        headers: { 'content-type': 'application/json' },
-                        body: options['body'] || null
-                    }
-                }, function(response) {
-                    if (chrome.runtime.lastError) {
-                        resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
-                    } else {
-                        resolve(response || { ok: false, status: 0, error: 'no response' });
-                    }
-                });
-            }
-
-            if (token) {
-                chrome['storage']['local']['set']({ '__ss_auth_token': token }, doFetch);
-            } else {
-                doFetch();
-            }
+                    body: options['body'] || null
+                }
+            }));
         });
     }
     // ─────────────────────────────────────────────────────────────────────────
