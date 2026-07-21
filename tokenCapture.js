@@ -78,8 +78,8 @@
     var _refreshCount = 0;
 
     function _triggerRefresh() {
-        // Don't refresh more than once per 8 seconds
-        if (Date.now() - _lastRefreshTs < 8000) return;
+        // Don't refresh more than once per 2 seconds
+        if (Date.now() - _lastRefreshTs < 2000) return;
         _lastRefreshTs = Date.now();
         _refreshCount++;
 

@@ -303,8 +303,8 @@
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 0x2, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
-        // Minimum 10 seconds — page needs time to fetch fresh data
-        return Math.max(_ms, 10000);
+        // Minimum 3 seconds — page needs a moment to process refresh
+        return Math.max(_ms, 3000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
