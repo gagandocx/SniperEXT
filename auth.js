@@ -487,11 +487,7 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
                 return;
             }
         }
-        console.log('[auth.js] OTP flow complete — redirecting to jobSearch');
-        // Direct redirect to jobSearch after successful verification
-        setTimeout(function() {
-            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-        }, 3000);
+        console.log('[auth.js] OTP flow complete — fetch.js will handle redirect');
         _otpHandling = false;
     }
 

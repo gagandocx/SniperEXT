@@ -121,15 +121,59 @@
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // Always return whatever we have — fresh or not
-        // The reload is handled by fetch.js on its own timer
-        document.dispatchEvent(new CustomEvent('__ss_api_response', {
-            detail: {
-                requestId: detail.requestId, ok: true, status: 200,
-                data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
-            }
-        }));
+        // Return intercepted data if fresh (< 4s — matches scan interval)
+        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 4000)) {
+            document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                detail: {
+                    requestId: detail.requestId, ok: true, status: 200,
+                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
+                }
+            }));
+        } else {
+            // Stale — trigger refresh and return what we have
+            _triggerRefresh();
+            document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                detail: {
+                    requestId: detail.requestId, ok: true, status: 200,
+                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
+                }
+            }));
+        }
     });
 
-    console.log('[SS] v8.9.6.2 ready — Response.prototype interceptor active');
+    // ── Trigger page refresh ─────────────────────────────────────────────────
+    var _lastRefreshTs = 0;
+    var _refreshCount = 0;
+
+    function _triggerRefresh() {
+        if (Date.now() - _lastRefreshTs < 1000) return;
+        _lastRefreshTs = Date.now();
+        _refreshCount++;
+
+        if (_refreshCount % 3 === 1) {
+            // Toggle Recommended → All
+            try {
+                var btns = document.querySelectorAll('button');
+                var recTab = null, allTab = null;
+                for (var i = 0; i < btns.length; i++) {
+                    var txt = btns[i].textContent.trim();
+                    if (txt === 'Recommended') recTab = btns[i];
+                    if (txt === 'All') allTab = btns[i];
+                }
+                if (recTab && allTab) {
+                    recTab.click();
+                    setTimeout(function() { allTab.click(); }, 800);
+                    return;
+                }
+            } catch(e) {}
+        }
+
+        // URL refresh
+        if (window.location.hash.includes('jobSearch')) {
+            var base = window.location.href.split('?')[0];
+            window.location.replace(base + '?r=' + Date.now());
+        }
+    }
+
+    console.log('[SS] v8.9.1.0 ready — Response.prototype interceptor active');
 })();

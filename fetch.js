@@ -308,8 +308,8 @@
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 3, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
-        // Minimum 5 seconds — page needs time to load + make GraphQL call
-        return Math.max(_ms, 5000);
+        // Minimum 1 second — for aggressive shift sniping
+        return Math.max(_ms, 1000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
@@ -894,23 +894,15 @@
         }
     }
 
-    // ── Interval helper: reloads page every c ms for fresh data ────
+    // ── Interval helper: fires D() immediately then every c ms ───
     function _startScan() {
         if (window['_ss_banner_shown']) return;
         if (b) { clearInterval(b); b = null; }
         if (!p) return;
-        // Don't reload immediately — let the current page load finish first
-        // The page load itself triggers Amazon's GraphQL call
-        // Our Response.prototype interceptor catches it
-        // If jobs found → __ss_jobs_found event → G() processes them
-        b = setInterval(function() {
-            if (!p) { clearInterval(b); b = null; return; }
-            if (window['_ss_banner_shown'] || window['_ss_guide_showing']) return;
-            // Only reload if we're on the jobSearch page
-            if (window.location.href.includes('app#/jobSearch')) {
-                window.location.reload();
-            }
-        }, c);
+        // Set interval BEFORE calling D() — both start at t=0
+        // Interval fires at t=c, t=2c, t=3c... perfectly aligned
+        b = setInterval(function() { p ? D() : (clearInterval(b), b = null); }, c);
+        D(); // First scan at t=0 — same reference point as interval
     }
     // ─────────────────────────────────────────────────────────────
 
@@ -1147,12 +1139,6 @@
     }
     async function E() {
         if (!j) {
-            // Check storage first — don't navigate if we already have candidateID
-            var stored = await chrome['storage']['local']['get']('candidateID');
-            if (stored['candidateID']) {
-                j = stored['candidateID'];
-                return;
-            }
             const O = y(i);
             // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
             window['_candidateIDFetching'] = true;
@@ -1426,22 +1412,18 @@
             }
             if (g) {
                 const P = y(i);
-                // Check storage first — skip contactInformation if we already have candidateID
-                var storedCID = await chrome['storage']['local']['get']('candidateID');
-                if (storedCID['candidateID']) {
-                    j = storedCID['candidateID'];
-                } else {
-                    // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
-                    window['_candidateIDFetching'] = true;
-                    window['location']['href'] = 'https://hiring.amazon.ca/app#/contactInformation', await f();
-                    let Q = null;
-                    const R = document['querySelector']('input[data-test-id=\x22input-test-id-emailId\x22]');
-                    if (R && R['value']) {
-                        Q = R['value'];
-                        chrome['storage']['local']['set']({ 'candidateID': Q });
-                        window['location']['href'] = 'https://hiring.amazon.ca/app#/jobSearch';
-                    }
-                    window['_candidateIDFetching'] = false;
+                // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
+                window['_candidateIDFetching'] = true;
+                window['location']['href'] = 'https://hiring.amazon.ca/app#/contactInformation', await f();
+                let Q = null;
+                const R = document['querySelector']('input[data-test-id=\x22input-test-id-emailId\x22]');
+                if (R && R['value']) {
+                    Q = R['value'];
+                    window['location']['href'] = 'https://hiring.amazon.ca/app#/jobSearch';
+                }
+                window['_candidateIDFetching'] = false;
+                if (p) {
+                    // get-config call removed
                 }
                 if (p) { _startScan(); }
                 else {
@@ -1669,32 +1651,43 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
     function doRedirect(reason) {
         console.log('[fetch.js] Redirecting to jobSearch. Reason:', reason);
         chrome.storage.local.remove('_pendingJobRedirect');
-        chrome.storage.local.remove('_pendingJobReloadUntil');
+        chrome.storage.local.set({ '_pendingJobReloadUntil': Date.now() + 3 * 60 * 1000 });
         window.location.replace(_jobSearchUrl);
+        // Reload page after 1 minute to fully start job checking
+        setTimeout(function() {
+            if (window.location.href.includes('app#/jobSearch')) {
+                console.log('[fetch.js] 1-min post-login reload to start job checking');
+                window.location.reload();
+            }
+        }, 60000);
     }
 
-    // After jobSearch page loads: handle post-login activation + click "All" tab
+    // After jobSearch page loads: handle post-login activation
     if (window.location.href.includes('app#/jobSearch')) {
         chrome.storage.local.get(['_pendingJobReloadUntil', '__ap'], function(d) {
-            // Clear any reload flags to prevent loops
-            chrome.storage.local.remove('_pendingJobReloadUntil');
+            var now = Date.now();
 
-            // Always activate and click "All" tab after arriving at jobSearch
+            // Case 1: Fresh post-login load — set the reload flag if not already activated
+            if (d._pendingJobReloadUntil && now < d._pendingJobReloadUntil) {
+                chrome.storage.local.remove('_pendingJobReloadUntil');
+                if (!d.__ap) {
+                    // Extension is not activated yet — reload page to trigger popup
+                    console.log('[fetch.js] Post-login: extension not activated, reloading in 3s');
+                    setTimeout(function() { window.location.reload(); }, 3000);
+                } else {
+                    // Extension IS activated — just send activate message to start D()
+                    console.log('[fetch.js] Post-login: extension activated, sending activate msg');
+                    chrome.runtime.sendMessage({ action: 'activate', status: true });
+                }
+                return;
+            }
+
+            // Case 2: Normal load — if activated but not running, send activate
             if (d.__ap) {
-                console.log('[fetch.js] jobSearch loaded — activating + clicking All tab');
-                chrome.runtime.sendMessage({ action: 'activate', status: true });
-
-                // Click "All" tab after 2s to start searching all jobs
+                console.log('[fetch.js] jobSearch loaded with active=true — sending activate');
                 setTimeout(function() {
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].textContent.trim() === 'All') {
-                            btns[i].click();
-                            console.log('[fetch.js] Clicked "All" tab');
-                            break;
-                        }
-                    }
-                }, 2000);
+                    chrome.runtime.sendMessage({ action: 'activate', status: true });
+                }, 1000);
             }
         });
     }
@@ -1776,23 +1769,13 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
 (function() {
     'use strict';
 
-    // 1. Proactive re-login every 40 minutes to prevent session expiry
-    // Amazon sessions expire after ~1 hour. Re-authenticating at 40min
-    // ensures the session is always fresh when a shift appears.
-    var _reloginInterval = 40 * 60 * 1000; // 40 minutes
-    setInterval(function() {
+    // 1. Hourly reload to detect session expiry
+    setTimeout(function() {
         if (!window['_ss_wizard_active']) {
-            console.log('[health] 40-min re-login — refreshing session');
-            // Navigate to auth login page — fetch.js will auto-fill email/PIN
-            var authUrl = window.location.hostname.includes('.com')
-                ? 'https://auth.hiring.amazon.com/#/login'
-                : 'https://auth.hiring.amazon.ca/#/login';
-            window.location.href = authUrl;
+            console.log('[health] Hourly refresh');
+            window.location.reload();
         }
-    }, _reloginInterval);
-
-    // Also do the first re-login check — log when next re-login will happen
-    console.log('[health] Next auto re-login in 40 minutes');
+    }, 60 * 60 * 1000);
 
     // 2. Bug 1 fix: Stuck on homepage without login → redirect to auth login
     function checkLoginRequired() {
