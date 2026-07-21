@@ -1769,13 +1769,23 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
 (function() {
     'use strict';
 
-    // 1. Hourly reload to detect session expiry
-    setTimeout(function() {
+    // 1. Proactive re-login every 40 minutes to prevent session expiry
+    // Amazon sessions expire after ~1 hour. Re-authenticating at 40min
+    // ensures the session is always fresh when a shift appears.
+    var _reloginInterval = 40 * 60 * 1000; // 40 minutes
+    setInterval(function() {
         if (!window['_ss_wizard_active']) {
-            console.log('[health] Hourly refresh');
-            window.location.reload();
+            console.log('[health] 40-min re-login — refreshing session');
+            // Navigate to auth login page — fetch.js will auto-fill email/PIN
+            var authUrl = window.location.hostname.includes('.com')
+                ? 'https://auth.hiring.amazon.com/#/login'
+                : 'https://auth.hiring.amazon.ca/#/login';
+            window.location.href = authUrl;
         }
-    }, 60 * 60 * 1000);
+    }, _reloginInterval);
+
+    // Also do the first re-login check — log when next re-login will happen
+    console.log('[health] Next auto re-login in 40 minutes');
 
     // 2. Bug 1 fix: Stuck on homepage without login → redirect to auth login
     function checkLoginRequired() {
