@@ -1139,6 +1139,12 @@
     }
     async function E() {
         if (!j) {
+            // Check storage first — don't navigate if we already have candidateID
+            var stored = await chrome['storage']['local']['get']('candidateID');
+            if (stored['candidateID']) {
+                j = stored['candidateID'];
+                return;
+            }
             const O = y(i);
             // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
             window['_candidateIDFetching'] = true;
@@ -1412,18 +1418,22 @@
             }
             if (g) {
                 const P = y(i);
-                // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
-                window['_candidateIDFetching'] = true;
-                window['location']['href'] = 'https://hiring.amazon.ca/app#/contactInformation', await f();
-                let Q = null;
-                const R = document['querySelector']('input[data-test-id=\x22input-test-id-emailId\x22]');
-                if (R && R['value']) {
-                    Q = R['value'];
-                    window['location']['href'] = 'https://hiring.amazon.ca/app#/jobSearch';
-                }
-                window['_candidateIDFetching'] = false;
-                if (p) {
-                    // get-config call removed
+                // Check storage first — skip contactInformation if we already have candidateID
+                var storedCID = await chrome['storage']['local']['get']('candidateID');
+                if (storedCID['candidateID']) {
+                    j = storedCID['candidateID'];
+                } else {
+                    // Flag: tell checkRedirect not to interrupt us while we fetch candidateID
+                    window['_candidateIDFetching'] = true;
+                    window['location']['href'] = 'https://hiring.amazon.ca/app#/contactInformation', await f();
+                    let Q = null;
+                    const R = document['querySelector']('input[data-test-id=\x22input-test-id-emailId\x22]');
+                    if (R && R['value']) {
+                        Q = R['value'];
+                        chrome['storage']['local']['set']({ 'candidateID': Q });
+                        window['location']['href'] = 'https://hiring.amazon.ca/app#/jobSearch';
+                    }
+                    window['_candidateIDFetching'] = false;
                 }
                 if (p) { _startScan(); }
                 else {
