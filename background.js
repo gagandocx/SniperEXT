@@ -569,14 +569,25 @@ chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
                     });
                 }
 
-                // Focus Gmail tab, wait 800ms for it to render, then read
+                // Focus Gmail tab, wait for it to FULLY wake up, then read
+                // Chrome throttles background tabs — Gmail needs a reload + focus
                 if (previousTabId !== gmailTabId) {
+                    // Focus first
                     chrome['tabs']['update'](gmailTabId, { 'active': true }, function() {
-                        setTimeout(runScript, 800);
+                        // Wait 2s for tab to wake from throttle
+                        setTimeout(function() {
+                            // Reload to ensure fresh inbox content
+                            chrome['tabs']['reload'](gmailTabId, { bypassCache: false }, function() {
+                                // Wait another 2s for Gmail to render
+                                setTimeout(runScript, 2000);
+                            });
+                        }, 500);
                     });
                 } else {
-                    // Gmail is already active — read immediately
-                    runScript();
+                    // Gmail is already active — still reload to get fresh emails
+                    chrome['tabs']['reload'](gmailTabId, { bypassCache: false }, function() {
+                        setTimeout(runScript, 1500);
+                    });
                 }
             });
         });
