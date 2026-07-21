@@ -308,8 +308,8 @@
                 'fetchIntervalUnit'
             ]), P = parseInt(O['fetchIntervalValue']) || 3, Q = O['fetchIntervalUnit'] || 's';
         var _ms = Q === 's' ? P * 0x3e8 : P;
-        // Minimum 1 second — for aggressive shift sniping
-        return Math.max(_ms, 1000);
+        // Minimum 5 seconds — page needs time to load + make GraphQL call
+        return Math.max(_ms, 5000);
     }
     async function A() {
         c = await z(), [g, h, j, k, l, m, n, o, p, $version, $credits, $isProUser, i] = await Promise['all']([
@@ -894,15 +894,23 @@
         }
     }
 
-    // ── Interval helper: fires D() immediately then every c ms ───
+    // ── Interval helper: reloads page every c ms for fresh data ────
     function _startScan() {
         if (window['_ss_banner_shown']) return;
         if (b) { clearInterval(b); b = null; }
         if (!p) return;
-        // Set interval BEFORE calling D() — both start at t=0
-        // Interval fires at t=c, t=2c, t=3c... perfectly aligned
-        b = setInterval(function() { p ? D() : (clearInterval(b), b = null); }, c);
-        D(); // First scan at t=0 — same reference point as interval
+        // Don't reload immediately — let the current page load finish first
+        // The page load itself triggers Amazon's GraphQL call
+        // Our Response.prototype interceptor catches it
+        // If jobs found → __ss_jobs_found event → G() processes them
+        b = setInterval(function() {
+            if (!p) { clearInterval(b); b = null; return; }
+            if (window['_ss_banner_shown'] || window['_ss_guide_showing']) return;
+            // Only reload if we're on the jobSearch page
+            if (window.location.href.includes('app#/jobSearch')) {
+                window.location.reload();
+            }
+        }, c);
     }
     // ─────────────────────────────────────────────────────────────
 

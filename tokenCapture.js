@@ -121,40 +121,15 @@
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // Return intercepted data if fresh (< scan interval + 1s buffer)
-        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 4000)) {
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: {
-                    requestId: detail.requestId, ok: true, status: 200,
-                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
-                }
-            }));
-        } else {
-            // Stale — trigger refresh and return what we have
-            _triggerRefresh();
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: {
-                    requestId: detail.requestId, ok: true, status: 200,
-                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
-                }
-            }));
-        }
+        // Always return whatever we have — fresh or not
+        // The reload is handled by fetch.js on its own timer
+        document.dispatchEvent(new CustomEvent('__ss_api_response', {
+            detail: {
+                requestId: detail.requestId, ok: true, status: 200,
+                data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
+            }
+        }));
     });
 
-    // ── Trigger page refresh — HARD RELOAD for guaranteed fresh data ─────────
-    var _lastRefreshTs = 0;
-    var _refreshCount = 0;
-
-    function _triggerRefresh() {
-        if (Date.now() - _lastRefreshTs < 1000) return;
-        _lastRefreshTs = Date.now();
-        _refreshCount++;
-
-        // Hard reload — guarantees fresh data from Amazon's server
-        // No caching, no stale React state, no missed shifts
-        console.log('[SS] Refreshing page for fresh data...');
-        window.location.reload();
-    }
-
-    console.log('[SS] v8.9.1.0 ready — Response.prototype interceptor active');
+    console.log('[SS] v8.9.6.2 ready — Response.prototype interceptor active');
 })();
