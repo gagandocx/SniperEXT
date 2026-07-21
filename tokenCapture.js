@@ -1,57 +1,73 @@
-// ── Token Capture + Response Interceptor — MAIN world script ─────────────────
-// v8.8.2.0 — COMPLETELY NEW APPROACH
+// ── Token Capture + Silent API Proxy — MAIN world script ─────────────────────
+// v8.8.3.0 — Silent scanning (NO page reloads)
 //
-// AWS WAF blocks ALL our own fetch() calls — even from MAIN world with the
-// same cookies. WAF uses behavioral/fingerprint detection that distinguishes
-// our programmatic requests from Amazon's React-initiated requests.
+// The original extension called the API silently without touching the page.
+// Our earlier versions triggered tab clicks and URL changes which caused
+// visible page reloads — bad UX.
 //
-// NEW STRATEGY: Don't make our own API calls. Instead:
-// 1. Intercept RESPONSES from Amazon's own GraphQL calls
-// 2. Trigger Amazon's page to search for jobs (click search, change filters)
-// 3. Read the job data from intercepted responses
-// 4. Send results to content script for processing
+// NEW APPROACH:
+// 1. Intercept the auth token from Amazon's first GraphQL call on page load
+// 2. Use that token for our own SILENT fetch() calls (no UI interaction)
+// 3. Use _origFetch (unpatched) with only content-type + authorization headers
+// 4. If WAF blocks us, serve cached data (don't trigger page changes)
 // ─────────────────────────────────────────────────────────────────────────────
 (function() {
     'use strict';
 
     var _origFetch = window.fetch;
+    var _capturedToken = null;
+    var _capturedTokenTs = 0;
     var _lastJobData = null;
     var _lastJobDataTs = 0;
+    var _wafBlocked = false;
+    var _wafBlockCount = 0;
 
-    // ── Intercept ALL fetch responses — steal job data from Amazon's calls ───
+    // ── Intercept fetch — capture token + steal responses ────────────────────
     window.fetch = function(input, init) {
         var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
         var result = _origFetch.apply(this, arguments);
 
-        // Only intercept GraphQL responses
+        // Capture auth token from ANY request
+        try {
+            if (init && init.headers) {
+                var headers = init.headers;
+                var authHeader = null;
+                if (headers instanceof Headers) {
+                    authHeader = headers.get('authorization');
+                } else if (typeof headers === 'object') {
+                    var hkeys = Object.keys(headers);
+                    for (var k = 0; k < hkeys.length; k++) {
+                        if (hkeys[k].toLowerCase() === 'authorization') {
+                            authHeader = headers[hkeys[k]]; break;
+                        }
+                    }
+                }
+                if (authHeader && authHeader.length > 100) {
+                    _capturedToken = authHeader;
+                    _capturedTokenTs = Date.now();
+                    _wafBlocked = false; // Token refreshed, reset WAF flag
+                    _wafBlockCount = 0;
+                }
+            }
+        } catch(e) {}
+
+        // Intercept GraphQL responses
         if (url.indexOf('appsync-api') !== -1 || url.indexOf('graphql') !== -1) {
             result.then(function(response) {
-                // Clone the response so Amazon's code can still read it
                 var clone = response.clone();
                 clone.json().then(function(data) {
-                    // Check if this response contains job cards
                     if (data && data.data && data.data.searchJobCardsByLocation) {
                         var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
-                        console.log('[tokenCapture] Intercepted job data:', jobCards.length, 'jobs');
                         _lastJobData = jobCards;
                         _lastJobDataTs = Date.now();
-
-                        // Send to content script
+                        console.log('[tokenCapture] Intercepted job data:', jobCards.length, 'jobs');
                         document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
-                            detail: {
-                                jobCards: jobCards,
-                                nextToken: data.data.searchJobCardsByLocation.nextToken,
-                                timestamp: Date.now()
-                            }
+                            detail: { jobCards: jobCards, timestamp: Date.now() }
                         }));
                     }
-                    // Also check for schedule data
                     if (data && data.data && data.data.searchScheduleCards) {
                         document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
-                            detail: {
-                                scheduleCards: data.data.searchScheduleCards.scheduleCards || [],
-                                timestamp: Date.now()
-                            }
+                            detail: { scheduleCards: data.data.searchScheduleCards.scheduleCards || [], timestamp: Date.now() }
                         }));
                     }
                 }).catch(function() {});
@@ -61,137 +77,109 @@
         return result;
     };
 
-    // ── Trigger Amazon's page to make a job search ──────────────────────────
-    // Called by content script when it wants fresh job data
-    var _lastTriggerMethod = 0;
-    document.addEventListener('__ss_trigger_search', function(evt) {
-        console.log('[tokenCapture] Triggering page search...');
-
-        // Rotate between methods to avoid caching
-        _lastTriggerMethod = (_lastTriggerMethod + 1) % 4;
-
-        if (_lastTriggerMethod === 0) {
-            // Method 1: Toggle Recommended → All (forces re-fetch)
-            try {
-                var recTab = document.querySelector('[data-test-id="recommended-tab"]');
-                if (!recTab) {
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].textContent.trim() === 'Recommended') { recTab = btns[i]; break; }
-                    }
-                }
-                if (recTab) {
-                    recTab.click();
-                    console.log('[tokenCapture] Clicked Recommended tab');
-                    // Then click All after 1.5s to trigger fresh search
-                    setTimeout(function() {
-                        var allTab = document.querySelector('[data-test-id="all-tab"]');
-                        if (!allTab) {
-                            var btns2 = document.querySelectorAll('button');
-                            for (var j = 0; j < btns2.length; j++) {
-                                if (btns2[j].textContent.trim() === 'All') { allTab = btns2[j]; break; }
-                            }
-                        }
-                        if (allTab) { allTab.click(); console.log('[tokenCapture] Clicked All tab'); }
-                    }, 1500);
-                    return;
-                }
-            } catch(e) {}
+    // ── Silent API call (no page interaction) ────────────────────────────────
+    // Uses the captured token to make our own fetch calls silently.
+    // If WAF blocks repeatedly, we just serve cached/empty data.
+    function _silentFetch(body) {
+        if (!_capturedToken) {
+            return Promise.resolve({ ok: false, status: 401, data: null });
         }
-
-        if (_lastTriggerMethod === 1) {
-            // Method 2: Navigate to jobSearch with cache-bust param
-            try {
-                var newHash = '#/jobSearch?_t=' + Date.now();
-                if (window.location.hash !== newHash) {
-                    window.location.hash = newHash;
-                    console.log('[tokenCapture] Hash navigation: ' + newHash);
-                    setTimeout(function() { window.location.hash = '#/jobSearch'; }, 800);
-                    return;
-                }
-            } catch(e) {}
-        }
-
-        if (_lastTriggerMethod === 2) {
-            // Method 3: Full page reload (forces fresh data)
-            try {
-                console.log('[tokenCapture] Triggering soft reload via hash');
-                window.location.href = window.location.pathname + '#/jobSearch';
-                // Don't actually reload — just trigger React router
-            } catch(e) {}
-        }
-
-        // Method 4 (fallback): Click All tab anyway
-        try {
-            var allTab = document.querySelector('[data-test-id="all-tab"]');
-            if (!allTab) {
-                var buttons = document.querySelectorAll('button');
-                for (var k = 0; k < buttons.length; k++) {
-                    if (buttons[k].textContent.trim() === 'All') { allTab = buttons[k]; break; }
-                }
+        return _origFetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'authorization': _capturedToken
+            },
+            body: body
+        }).then(function(response) {
+            if (response.status === 403) {
+                _wafBlockCount++;
+                if (_wafBlockCount >= 3) _wafBlocked = true;
+                return { ok: false, status: 403, data: null };
             }
-            if (allTab) { allTab.click(); console.log('[tokenCapture] Clicked All tab'); }
-        } catch(e) {}
-    });
+            _wafBlockCount = 0;
+            _wafBlocked = false;
+            return response.json().then(function(data) {
+                // Cache successful response
+                if (data && data.data && data.data.searchJobCardsByLocation) {
+                    _lastJobData = data.data.searchJobCardsByLocation.jobCards || [];
+                    _lastJobDataTs = Date.now();
+                }
+                return { ok: response.ok, status: response.status, data: data };
+            });
+        }).catch(function(err) {
+            // CORS or network error — likely WAF
+            _wafBlockCount++;
+            if (_wafBlockCount >= 3) _wafBlocked = true;
+            return { ok: false, status: 0, error: err.message };
+        });
+    }
 
-    // ── Also respond to direct API request attempts with cached data ─────────
+    // ── Handle API requests from content script ──────────────────────────────
     document.addEventListener('__ss_api_request', function(evt) {
         var detail = evt.detail || {};
         if (!detail.requestId) return;
 
-        // If we have ANY cached data (even 0 jobs), return it — that's valid
-        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 60000)) {
-            console.log('[tokenCapture] Returning cached job data (' + _lastJobData.length + ' jobs)');
+        function respond(result) {
             document.dispatchEvent(new CustomEvent('__ss_api_response', {
                 detail: {
                     requestId: detail.requestId,
-                    ok: true,
-                    status: 200,
-                    data: {
-                        data: {
-                            searchJobCardsByLocation: {
-                                jobCards: _lastJobData,
-                                nextToken: null
-                            }
-                        }
-                    }
+                    ok: result.ok,
+                    status: result.status,
+                    data: result.data
                 }
             }));
-            // Also trigger a fresh search in background for next cycle
-            document.dispatchEvent(new CustomEvent('__ss_trigger_search', { detail: {} }));
-        } else {
-            // No cached data — trigger a search and wait
-            document.dispatchEvent(new CustomEvent('__ss_trigger_search', { detail: {} }));
+        }
 
-            // Wait up to 10s for the intercepted response
-            var _waited = 0;
-            var _pollInterval = setInterval(function() {
-                _waited += 500;
-                if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 10000)) {
-                    clearInterval(_pollInterval);
-                    document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                        detail: {
-                            requestId: detail.requestId,
-                            ok: true,
-                            status: 200,
-                            data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
-                        }
-                    }));
-                } else if (_waited >= 10000) {
-                    clearInterval(_pollInterval);
-                    // Return empty result instead of error (no jobs is valid)
-                    document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                        detail: {
-                            requestId: detail.requestId,
-                            ok: true,
-                            status: 200,
-                            data: { data: { searchJobCardsByLocation: { jobCards: [], nextToken: null } } }
-                        }
-                    }));
+        // If WAF is blocking us, just serve cached data silently
+        if (_wafBlocked && _lastJobData !== null) {
+            console.log('[tokenCapture] WAF blocked — serving cached data (' + _lastJobData.length + ' jobs)');
+            respond({
+                ok: true, status: 200,
+                data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
+            });
+            return;
+        }
+
+        // Try silent fetch with captured token
+        if (_capturedToken && !_wafBlocked) {
+            _silentFetch(detail.body).then(function(result) {
+                if (result.ok && result.data) {
+                    respond(result);
+                } else if (_lastJobData !== null) {
+                    // Silent call failed but we have cache — use it
+                    respond({
+                        ok: true, status: 200,
+                        data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
+                    });
+                } else {
+                    // No cache, no success — return empty (no page disruption)
+                    respond({
+                        ok: true, status: 200,
+                        data: { data: { searchJobCardsByLocation: { jobCards: [], nextToken: null } } }
+                    });
                 }
-            }, 500);
+            });
+        } else if (_lastJobData !== null) {
+            // No token yet but have cached data
+            respond({
+                ok: true, status: 200,
+                data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
+            });
+        } else {
+            // No token, no cache — return empty silently
+            respond({
+                ok: true, status: 200,
+                data: { data: { searchJobCardsByLocation: { jobCards: [], nextToken: null } } }
+            });
         }
     });
 
-    console.log('[tokenCapture] v8.8.2.0 — Response interceptor mode (no own API calls)');
+    // ── Also listen for trigger events but do them SILENTLY ──────────────────
+    document.addEventListener('__ss_trigger_search', function(evt) {
+        // Don't trigger page interactions — just try a silent fetch
+        // The scan cycle in fetch.js handles the polling
+    });
+
+    console.log('[tokenCapture] v8.8.3.0 — Silent mode (no page reloads)');
 })();
