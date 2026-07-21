@@ -237,28 +237,32 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
                 // No Gmail tab open — auto-open one
                 console.log('[bg] No Gmail tab found — opening mail.google.com');
                 chrome['tabs']['create']({ 'url': 'https://mail.google.com/', 'active': false }, function(newTab) {
-                    // Wait 5s for Gmail to load then signal done
                     setTimeout(function() { c({ done: true, opened: true }); }, 5000);
                 });
                 return;
             }
-            chrome['tabs']['reload'](tabs[0]['id'], { bypassCache: true }, function() {
-                // Poll until loaded
-                var tabId = tabs[0]['id'];
-                var tries = 0;
-                function poll() {
-                    chrome['tabs']['get'](tabId, function(tab) {
-                        if (tab && tab['status'] === 'complete') {
-                            setTimeout(function() { c({ done: true }); }, 2000); // +2s for Gmail render
-                        } else if (tries++ < 20) {
-                            setTimeout(poll, 500);
-                        } else {
-                            c({ done: true }); // timeout
-                        }
-                    });
-                }
-                poll();
-            });
+            // Reload ALL Gmail tabs so the correct one gets fresh emails
+            var reloaded = 0;
+            for (var i = 0; i < tabs.length; i++) {
+                chrome['tabs']['reload'](tabs[i]['id'], { bypassCache: true });
+                reloaded++;
+            }
+            console.log('[bg] Refreshed', reloaded, 'Gmail tabs');
+            // Wait for them to load
+            var mainTabId = tabs[0]['id'];
+            var tries = 0;
+            function poll() {
+                chrome['tabs']['get'](mainTabId, function(tab) {
+                    if (tab && tab['status'] === 'complete') {
+                        setTimeout(function() { c({ done: true }); }, 2000);
+                    } else if (tries++ < 20) {
+                        setTimeout(poll, 500);
+                    } else {
+                        c({ done: true });
+                    }
+                });
+            }
+            poll();
         });
         return true;
     }
@@ -283,71 +287,88 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return !![];
     }
     if (a['action'] === 'fetchGmailOTP') {
-        // Read OTP directly from Gmail DOM — no fetch, no auth popup, no CORS
+        // Read OTP directly from Gmail DOM — check ALL Gmail tabs for the one with Amazon email
         chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
-            if (!tabs || !tabs[0]) {
+            if (!tabs || !tabs.length) {
                 console.log('[bg] No Gmail tab open — please keep Gmail open');
                 c({ 'otp': null });
                 return;
             }
-            // Just inject script — refresh is done once from auth.js before polling starts
-            chrome['scripting']['executeScript']({
-                'target': { 'tabId': tabs[0]['id'] },
-                'func': function() {
-                    // Method 1: Scan ALL visible text — fastest, catches inbox preview
-                    const bodyText = document.body.innerText || '';
-                    const lines = bodyText.split('\n');
-                    for (let i = 0; i < lines.length; i++) {
-                        if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
-                            const chunk = lines.slice(i, i + 5).join(' ');
-                            const m = chunk.match(/\b(\d{6})\b/);
-                            if (m) return m[1];
-                        }
-                    }
 
-                    // Method 2: Gmail inbox rows — preview snippet contains OTP
-                    const rows = document.querySelectorAll('tr.zA, [data-thread-id], [data-legacy-thread-id]');
-                    for (const row of rows) {
-                        const txt = row.innerText || '';
-                        if (/amazon.*verification|verification.*amazon/i.test(txt)) {
-                            const m = txt.match(/\b(\d{6})\b/);
-                            if (m) return m[1];
-                        }
-                    }
-
-                    // Method 3: Open email body
-                    const emailBody = document.querySelector('.a3s.aiL, .ii.gt, [data-message-id] .a3s');
-                    if (emailBody) {
-                        const m = (emailBody.innerText || '').match(/\b(\d{6})\b/);
-                        if (m) return m[1];
-                    }
-
-                    // Method 4: Brute force — find any 6-digit code near "Amazon" in full page
-                    const full = bodyText.replace(/\s+/g, ' ');
-                    const amazonIdx = full.toLowerCase().indexOf('amazon jobs verification');
-                    if (amazonIdx > -1) {
-                        const region = full.slice(amazonIdx, amazonIdx + 200);
-                        const m = region.match(/\b(\d{6})\b/);
-                        if (m) return m[1];
-                    }
-
-                    // Method 5: Find ALL 6-digit codes on the page near "verification code"
-                    // Get the LATEST (first matching block — Gmail shows newest first)
-                    const allMatches = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
-                    if (allMatches.length > 0) return allMatches[0][1];
-
-                    return null;
-                }
-            }, function(results) {
-                if (chrome['runtime']['lastError']) {
-                    console.error('[bg] Gmail DOM read error:', chrome['runtime']['lastError']['message']);
+            // Try each Gmail tab until we find the OTP
+            var tabIndex = 0;
+            function tryNextTab() {
+                if (tabIndex >= tabs.length) {
+                    console.log('[bg] OTP not found in any of', tabs.length, 'Gmail tabs');
                     c({ 'otp': null });
                     return;
                 }
-                const otp = results && results[0] && results[0]['result'];
-                console.log('[bg] Gmail OTP from DOM:', otp);
-                c({ 'otp': otp || null });
-            });
+                var tabId = tabs[tabIndex]['id'];
+                tabIndex++;
+
+                chrome['scripting']['executeScript']({
+                    'target': { 'tabId': tabId },
+                    'func': function() {
+                        // Method 1: Scan ALL visible text — fastest, catches inbox preview
+                        const bodyText = document.body.innerText || '';
+                        const lines = bodyText.split('\n');
+                        for (let i = 0; i < lines.length; i++) {
+                            if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
+                                const chunk = lines.slice(i, i + 5).join(' ');
+                                const m = chunk.match(/\b(\d{6})\b/);
+                                if (m) return m[1];
+                            }
+                        }
+
+                        // Method 2: Gmail inbox rows — preview snippet contains OTP
+                        const rows = document.querySelectorAll('tr.zA, [data-thread-id], [data-legacy-thread-id]');
+                        for (const row of rows) {
+                            const txt = row.innerText || '';
+                            if (/amazon.*verification|verification.*amazon/i.test(txt)) {
+                                const m = txt.match(/\b(\d{6})\b/);
+                                if (m) return m[1];
+                            }
+                        }
+
+                        // Method 3: Open email body
+                        const emailBody = document.querySelector('.a3s.aiL, .ii.gt, [data-message-id] .a3s');
+                        if (emailBody) {
+                            const m = (emailBody.innerText || '').match(/\b(\d{6})\b/);
+                            if (m) return m[1];
+                        }
+
+                        // Method 4: Brute force — find any 6-digit code near "Amazon" in full page
+                        const full = bodyText.replace(/\s+/g, ' ');
+                        const amazonIdx = full.toLowerCase().indexOf('amazon jobs verification');
+                        if (amazonIdx > -1) {
+                            const region = full.slice(amazonIdx, amazonIdx + 200);
+                            const m = region.match(/\b(\d{6})\b/);
+                            if (m) return m[1];
+                        }
+
+                        // Method 5: Find ALL 6-digit codes on the page near "verification code"
+                        const allMatches = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
+                        if (allMatches.length > 0) return allMatches[0][1];
+
+                        return null;
+                    }
+                }, function(results) {
+                    if (chrome['runtime']['lastError']) {
+                        // This tab failed — try next
+                        tryNextTab();
+                        return;
+                    }
+                    const otp = results && results[0] && results[0]['result'];
+                    if (otp) {
+                        console.log('[bg] Gmail OTP found in tab', tabIndex, ':', otp);
+                        c({ 'otp': otp });
+                    } else {
+                        // Not in this tab — try next
+                        tryNextTab();
+                    }
+                });
+            }
+            tryNextTab();
         });
         return !![];
     }
