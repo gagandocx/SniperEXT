@@ -11,17 +11,6 @@
     {
       "matches": [
         "https://hiring.amazon.ca/*",
-        "https://hiring.amazon.com/*"
-      ],
-      "js": [
-        "tokenCapture.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://hiring.amazon.ca/*",
         "https://hiring.amazon.com/*",
         "*://auth.hiring.amazon.com/*",
         "*://auth.hiring.amazon.ca/*"
@@ -63,6 +52,17 @@
       "css": [
         "css/swal_theme.css"
       ]
+    },
+    {
+      "matches": [
+        "https://hiring.amazon.ca/app*",
+        "https://hiring.amazon.com/app*"
+      ],
+      "js": [
+        "tokenCapture.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "description": "This Extension Books Amazon Warehouse Shift Automatically",
@@ -102,7 +102,7 @@
     "notifications",
     "debugger"
   ],
-  "version": "8.8.1.0",
+  "version": "8.9.3.4",
   "web_accessible_resources": [
     {
       "matches": [
