@@ -11,13 +11,23 @@
     {
       "matches": [
         "https://hiring.amazon.ca/*",
+        "https://hiring.amazon.com/*"
+      ],
+      "js": [
+        "tokenCapture.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://hiring.amazon.ca/*",
         "https://hiring.amazon.com/*",
         "*://auth.hiring.amazon.com/*",
         "*://auth.hiring.amazon.ca/*"
       ],
       "js": [
-        "notif_block.js",
-        "tokenCapture.js"
+        "notif_block.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"
