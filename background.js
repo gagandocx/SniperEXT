@@ -19,55 +19,7 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         }
         a['postMessage'](c);
     });
-}),
-
-// ── Proxy Fetch — makes API calls from background (no CORS) ─────────────────
-// Content scripts send { action: 'proxyFetch', url, options } and get back the
-// JSON response. Background service worker is exempt from CORS restrictions.
-chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse) {
-    if (msg['action'] !== 'proxyFetch') return false;
-
-    var url = msg['url'];
-    var options = msg['options'] || {};
-
-    // Ensure we pass through the auth token from storage if available
-    (async function() {
-        try {
-            // Build fetch options — no credentials needed in background (no cookies)
-            // but we DO need the auth token
-            var fetchOpts = {
-                method: options['method'] || 'POST',
-                headers: options['headers'] || {},
-                body: options['body'] || null
-            };
-
-            // If no authorization header provided, try to read from storage
-            var hasAuth = false;
-            var headerKeys = Object.keys(fetchOpts.headers);
-            for (var i = 0; i < headerKeys.length; i++) {
-                if (headerKeys[i].toLowerCase() === 'authorization') { hasAuth = true; break; }
-            }
-            if (!hasAuth) {
-                var stored = await chrome['storage']['local']['get']('__ss_auth_token');
-                if (stored['__ss_auth_token']) {
-                    fetchOpts.headers['authorization'] = stored['__ss_auth_token'];
-                }
-            }
-
-            var response = await fetch(url, fetchOpts);
-            var data = await response.json();
-            sendResponse({ ok: response.ok, status: response.status, data: data });
-        } catch(err) {
-            console.error('[bg] proxyFetch error:', err.message);
-            sendResponse({ ok: false, status: 0, error: err.message });
-        }
-    })();
-
-    return true; // Keep sendResponse channel open for async
-}),
-// ─────────────────────────────────────────────────────────────────────────────
-
-chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
+}), chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
     chrome['action']['disable'](), chrome['declarativeContent']['onPageChanged']['removeRules'](undefined, () => {
         let b = {
                 'conditions': [new chrome['declarativeContent']['PageStateMatcher']({ 'pageUrl': {} })],
@@ -331,267 +283,73 @@ chrome['runtime']['onInstalled']['addListener'](async ({reason: a}) => {
         return !![];
     }
     if (a['action'] === 'fetchGmailOTP') {
-        chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
-            if (!tabs || !tabs[0]) {
-                // Auto-open Gmail tab and signal to retry
-                console.log('[bg] fetchGmailOTP: no Gmail tab — opening one');
-                chrome['tabs']['create']({ 'url': 'https://mail.google.com/', 'active': false }, function() {
-                    c({ 'otp': null, 'gmailOpened': true });
-                });
-                return;
-            }
-            var tabId = tabs[0]['id'];
-
-            chrome['scripting']['executeScript']({
-                'target': { 'tabId': tabId },
-                'func': function() {
-                    // Strategy: find and click the Amazon OTP email thread,
-                    // then read all codes from the thread body (newest = last)
-
-                    function extractCodes(text) {
-                        var codes = [];
-                        var matches = text.matchAll(/verification code for Amazon[^0-9]{0,30}(\d{6})/gi);
-                        for (var m of matches) codes.push(m[1]);
-                        // Also grab standalone 6-digit numbers near "Amazon"
-                        var lines = text.split('\n');
-                        for (var i = 0; i < lines.length; i++) {
-                            if (/amazon.{0,40}(verification|jobs)/i.test(lines[i])) {
-                                var chunk = lines.slice(Math.max(0,i-1), i+4).join(' ');
-                                var m2 = chunk.match(/(\d{6})/);
-                                if (m2) codes.push(m2[1]);
-                            }
-                        }
-                        return codes;
-                    }
-
-                    // First check if an Amazon OTP email is already open
-                    var openBodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s');
-                    var allCodesFromOpen = [];
-                    openBodies.forEach(function(el) {
-                        var t = el.textContent || '';
-                        if (/amazon.*verification|verification.*amazon/i.test(t)) {
-                            extractCodes(t).forEach(function(c) { allCodesFromOpen.push(c); });
-                        }
-                    });
-                    if (allCodesFromOpen.length > 0) {
-                        console.log('[gmail] Found codes in open email:', allCodesFromOpen);
-                        return allCodesFromOpen[allCodesFromOpen.length - 1]; // newest = last
-                    }
-
-                    // Find and click the Amazon OTP thread row to open it
-                    var rows = document.querySelectorAll('tr.zA, [data-legacy-thread-id]');
-                    var amazonRow = null;
-                    for (var row of rows) {
-                        var t = row.textContent || '';
-                        if (/amazon.*verification code|verification code.*amazon/i.test(t) &&
-                            /no-reply.*jobs\.amazon/i.test(t)) {
-                            amazonRow = row;
-                            break;
-                        }
-                        // Fallback: any row with "Amazon Jobs verification"
-                        if (/amazon jobs verification/i.test(t)) {
-                            amazonRow = row;
-                            break;
-                        }
-                    }
-
-                    if (amazonRow) {
-                        // Check if code visible in preview (inbox list)
-                        var previewText = amazonRow.textContent || '';
-                        var codesInPreview = extractCodes(previewText);
-                        var previewMatch = previewText.match(/Amazon Jobs\.\s+(\d{6})/);
-                        if (previewMatch) codesInPreview.push(previewMatch[1]);
-
-                        // Click to open the thread
-                        amazonRow.click();
-                        console.log('[gmail] Clicked Amazon OTP thread row');
-
-                        // Return preview code immediately, background will re-read after open
-                        if (codesInPreview.length > 0) {
-                            return 'CLICK:' + codesInPreview[codesInPreview.length - 1];
-                        }
-                        return 'CLICK:wait';
-                    }
-
-                    // Last resort: scan all visible text
-                    var allCodes = extractCodes(document.body.textContent || '');
-                    console.log('[gmail] Scanned body, codes:', allCodes);
-                    return allCodes.length > 0 ? allCodes[allCodes.length - 1] : null;
-                }
-            }, function(results) {
-                if (chrome['runtime']['lastError']) { c({ 'otp': null }); return; }
-                var raw = results && results[0] && results[0]['result'];
-                console.log('[bg] Gmail raw result:', raw);
-
-                if (raw && raw.toString().startsWith('CLICK:')) {
-                    var immediate = raw.replace('CLICK:', '');
-                    if (immediate === 'wait' || immediate.length !== 6) {
-                        // Thread was clicked, wait 2s for it to open then re-read
-                        setTimeout(function() {
-                            chrome['scripting']['executeScript']({
-                                'target': { 'tabId': tabId },
-                                'func': function() {
-                                    var bodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
-                                    var codes = [];
-                                    bodies.forEach(function(el) {
-                                        var t = el.textContent || '';
-                                        var m = t.match(/(\d{6})/);
-                                        if (m && /amazon|verification/i.test(t)) codes.push(m[1]);
-                                    });
-                                    return codes.length > 0 ? codes[codes.length - 1] : null;
-                                }
-                            }, function(r2) {
-                                var otp = r2 && r2[0] && r2[0]['result'];
-                                console.log('[bg] Gmail re-read after click:', otp);
-                                c({ 'otp': otp || null });
-                            });
-                        }, 2000);
-                        return;
-                    }
-                    c({ 'otp': immediate });
-                } else {
-                    c({ 'otp': raw || null });
-                }
-            });
-        });
-        return true;
-    }
-
-    if (a['action'] === 'refreshGmailTab') {
-        chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
-            if (!tabs || !tabs[0]) { c({ done: false, error: 'no gmail tab' }); return; }
-            chrome['tabs']['reload'](tabs[0]['id'], { bypassCache: true }, function() {
-                // Poll until loaded
-                var tabId = tabs[0]['id'];
-                var tries = 0;
-                function poll() {
-                    chrome['tabs']['get'](tabId, function(tab) {
-                        if (tab && tab['status'] === 'complete') {
-                            setTimeout(function() { c({ done: true }); }, 2000); // +2s for Gmail render
-                        } else if (tries++ < 20) {
-                            setTimeout(poll, 500);
-                        } else {
-                            c({ done: true }); // timeout
-                        }
-                    });
-                }
-                poll();
-            });
-        });
-        return true;
-    }
-    if (a['action'] === 'getTabId') {
-        c({ tabId: b && b.tab ? b.tab.id : null });
-        return;
-    }
-
-    if (a['action'] === 'captureScreen') {
-        // Must capture the ACTIVE visible tab — captureVisibleTab only works on active tabs
-        chrome['tabs']['query']({ 'active': !![], 'currentWindow': !![] }, function(tabs) {
-            if (!tabs || !tabs[0]) { c({ 'dataUrl': null }); return; }
-            chrome['tabs']['captureVisibleTab'](tabs[0]['windowId'], { 'format': 'png', 'quality': 100 }, function(dataUrl) {
-                if (chrome.runtime.lastError) {
-                    console.error('captureVisibleTab error:', chrome.runtime.lastError.message);
-                    c({ 'dataUrl': null });
-                    return;
-                }
-                c({ 'dataUrl': dataUrl || null });
-            });
-        });
-        return !![];
-    }
-    if (a['action'] === 'fetchGmailOTP') {
-        // Read OTP from Gmail DOM — briefly focus tab so Gmail fully renders, then restore
+        // Read OTP directly from Gmail DOM — no fetch, no auth popup, no CORS
         chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
             if (!tabs || !tabs[0]) {
                 console.log('[bg] No Gmail tab open — please keep Gmail open');
                 c({ 'otp': null });
                 return;
             }
-            var gmailTabId = tabs[0]['id'];
-
-            // Remember which tab is currently active so we can restore it after
-            chrome['tabs']['query']({ 'active': true, 'currentWindow': true }, function(activeTabs) {
-                var previousTabId = activeTabs && activeTabs[0] ? activeTabs[0]['id'] : null;
-
-                function runScript() {
-                    chrome['scripting']['executeScript']({
-                        'target': { 'tabId': gmailTabId },
-                        'func': function() {
-                            // Method 1: Open email body (most reliable when email is open)
-                            var openBodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
-                            for (var el of openBodies) {
-                                var t = el.textContent || '';
-                                if (/amazon|verification/i.test(t)) {
-                                    var m = t.match(/\b(\d{6})\b/);
-                                    if (m) return m[1];
-                                }
-                            }
-
-                            // Method 2: Gmail inbox rows — preview snippet
-                            var rows = document.querySelectorAll('tr.zA, [data-thread-id], [data-legacy-thread-id]');
-                            for (var row of rows) {
-                                var txt = row.textContent || '';
-                                if (/amazon.*verification|verification.*amazon/i.test(txt)) {
-                                    var m2 = txt.match(/\b(\d{6})\b/);
-                                    if (m2) return m2[1];
-                                }
-                            }
-
-                            // Method 3: Brute force full page scan
-                            var full = (document.body.textContent || '').replace(/\s+/g, ' ');
-                            var allMatches = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
-                            if (allMatches.length > 0) return allMatches[0][1];
-
-                            // Method 4: Any 6-digit code near "Amazon" anywhere on page
-                            var idx = full.toLowerCase().indexOf('amazon jobs');
-                            if (idx > -1) {
-                                var region = full.slice(idx, idx + 300);
-                                var m3 = region.match(/\b(\d{6})\b/);
-                                if (m3) return m3[1];
-                            }
-
-                            return null;
+            // Just inject script — refresh is done once from auth.js before polling starts
+            chrome['scripting']['executeScript']({
+                'target': { 'tabId': tabs[0]['id'] },
+                'func': function() {
+                    // Method 1: Scan ALL visible text — fastest, catches inbox preview
+                    const bodyText = document.body.innerText || '';
+                    const lines = bodyText.split('\n');
+                    for (let i = 0; i < lines.length; i++) {
+                        if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
+                            const chunk = lines.slice(i, i + 5).join(' ');
+                            const m = chunk.match(/\b(\d{6})\b/);
+                            if (m) return m[1];
                         }
-                    }, function(results) {
-                        // Restore previous tab immediately after reading
-                        if (previousTabId && previousTabId !== gmailTabId) {
-                            chrome['tabs']['update'](previousTabId, { 'active': true });
+                    }
+
+                    // Method 2: Gmail inbox rows — preview snippet contains OTP
+                    const rows = document.querySelectorAll('tr.zA, [data-thread-id], [data-legacy-thread-id]');
+                    for (const row of rows) {
+                        const txt = row.innerText || '';
+                        if (/amazon.*verification|verification.*amazon/i.test(txt)) {
+                            const m = txt.match(/\b(\d{6})\b/);
+                            if (m) return m[1];
                         }
-                        if (chrome['runtime']['lastError']) {
-                            console.error('[bg] Gmail DOM read error:', chrome['runtime']['lastError']['message']);
-                            c({ 'otp': null });
-                            return;
-                        }
-                        var otp = results && results[0] && results[0]['result'];
-                        console.log('[bg] Gmail OTP from DOM:', otp);
-                        c({ 'otp': otp || null });
-                    });
+                    }
+
+                    // Method 3: Open email body
+                    const emailBody = document.querySelector('.a3s.aiL, .ii.gt, [data-message-id] .a3s');
+                    if (emailBody) {
+                        const m = (emailBody.innerText || '').match(/\b(\d{6})\b/);
+                        if (m) return m[1];
+                    }
+
+                    // Method 4: Brute force — find any 6-digit code near "Amazon" in full page
+                    const full = bodyText.replace(/\s+/g, ' ');
+                    const amazonIdx = full.toLowerCase().indexOf('amazon jobs verification');
+                    if (amazonIdx > -1) {
+                        const region = full.slice(amazonIdx, amazonIdx + 200);
+                        const m = region.match(/\b(\d{6})\b/);
+                        if (m) return m[1];
+                    }
+
+                    // Method 5: Find ALL 6-digit codes on the page near "verification code"
+                    // Get the LATEST (first matching block — Gmail shows newest first)
+                    const allMatches = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
+                    if (allMatches.length > 0) return allMatches[0][1];
+
+                    return null;
                 }
-
-                // Focus Gmail tab, wait for it to FULLY wake up, then read
-                // Chrome throttles background tabs — Gmail needs a reload + focus
-                if (previousTabId !== gmailTabId) {
-                    // Focus first
-                    chrome['tabs']['update'](gmailTabId, { 'active': true }, function() {
-                        // Wait 2s for tab to wake from throttle
-                        setTimeout(function() {
-                            // Reload to ensure fresh inbox content
-                            chrome['tabs']['reload'](gmailTabId, { bypassCache: false }, function() {
-                                // Wait another 2s for Gmail to render
-                                setTimeout(runScript, 2000);
-                            });
-                        }, 500);
-                    });
-                } else {
-                    // Gmail is already active — still reload to get fresh emails
-                    chrome['tabs']['reload'](gmailTabId, { bypassCache: false }, function() {
-                        setTimeout(runScript, 1500);
-                    });
+            }, function(results) {
+                if (chrome['runtime']['lastError']) {
+                    console.error('[bg] Gmail DOM read error:', chrome['runtime']['lastError']['message']);
+                    c({ 'otp': null });
+                    return;
                 }
+                const otp = results && results[0] && results[0]['result'];
+                console.log('[bg] Gmail OTP from DOM:', otp);
+                c({ 'otp': otp || null });
             });
         });
-        return true;
+        return !![];
     }
     if (a['action'] === 'start_fetch')
         chrome['runtime']['sendMessage']({ 'action': 'start_fetch' });
