@@ -30,6 +30,7 @@
     var STATE_TIMEOUTS = {
         'LOGIN_PAGE':       20000,   // 20s — page should load and fill quickly
         'LOGIN_FILLING':    15000,   // 15s — filling email/PIN shouldn't take long
+        'WELCOME_BACK':     5000,    // 5s — just need to click "Search all jobs"
         'AUTH_VERIFY_TYPE': 15000,   // 15s — should auto-select email and click Send
         'AUTH_CAPTCHA':     45000,   // 45s — Groq call + click + verify takes time
         'AUTH_OTP':         90000,   // 90s — waiting for email can be slow
@@ -104,6 +105,18 @@
 
             // Login page with form?
             if (url.includes('#/login') || url.includes('/login')) {
+                // v8.9.5.5: "Welcome back" page — already logged in, just needs "Search all jobs" click
+                var bodyText2 = (document.body && document.body.innerText) || '';
+                var isWelcomeBack = bodyText2.includes('Welcome back') || bodyText2.includes('continue where you left');
+                var hasSearchBtn = false;
+                var allEls = document.querySelectorAll('button, a');
+                for (var wb = 0; wb < allEls.length; wb++) {
+                    if (/search all jobs/i.test(allEls[wb].textContent)) { hasSearchBtn = true; break; }
+                }
+                if (isWelcomeBack || (hasSearchBtn && !document.querySelector('input[data-test-id="input-test-id-login"]'))) {
+                    return 'WELCOME_BACK';
+                }
+
                 var emailInput = document.querySelector('input[data-test-id="input-test-id-login"]');
                 var pinInput = document.querySelector('input[data-test-id="input-test-id-pin"]');
                 if (pinInput) return 'LOGIN_FILLING'; // On PIN step
@@ -175,6 +188,26 @@
         }
 
         switch (state) {
+            case 'WELCOME_BACK':
+                // Post-login "Welcome back" page — click "Search all jobs"
+                console.log(LOG_PREFIX, '🔧 Welcome back page — clicking "Search all jobs"');
+                var allEls = document.querySelectorAll('button, a');
+                var clicked = false;
+                for (var wb = 0; wb < allEls.length; wb++) {
+                    if (/search all jobs/i.test(allEls[wb].textContent)) {
+                        allEls[wb].click();
+                        clicked = true;
+                        console.log(LOG_PREFIX, '✅ Clicked "Search all jobs"');
+                        break;
+                    }
+                }
+                if (!clicked) {
+                    // Fallback: navigate directly
+                    console.log(LOG_PREFIX, '🔧 Button not found — navigating directly to jobSearch');
+                    window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+                }
+                break;
+
             case 'LOGIN_PAGE':
                 // Login form not being filled — trigger C() via activate message
                 console.log(LOG_PREFIX, '🔧 Triggering login fill via activate');

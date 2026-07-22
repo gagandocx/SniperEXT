@@ -754,6 +754,26 @@
         const O = window['location']['href'], P = O['includes']('#/contactInformation'), Q = O['includes']('#/login'), R = O['includes']('jobSearch');
         let S = await chrome['storage']['local']['get']('__uc')['then'](({__uc: V}) => V), T = a['includes']('login'), U = a['includes']('jobSearch');
         if (Q) {
+            // v8.9.5.5: Detect "Welcome back" post-login page — just click "Search all jobs"
+            // This page shows at hiring.amazon.ca/#/login AFTER successful login
+            // with buttons "Go to my jobs" and "Search all jobs" but NO email/PIN inputs
+            var _welcomeBack = document.body.innerText.includes('Welcome back') ||
+                               document.body.innerText.includes('continue where you left');
+            var _searchAllBtn = [...document.querySelectorAll('button, a')].find(function(el) {
+                return /search all jobs/i.test(el.textContent.trim());
+            });
+            if (_welcomeBack && _searchAllBtn) {
+                console.log('[fetch.js] Welcome back page detected — clicking "Search all jobs"');
+                _searchAllBtn.click();
+                return; // Done — page will navigate to jobSearch
+            }
+            // Also try if just the button exists (even without "Welcome back" text)
+            if (_searchAllBtn && !document.querySelector('input[data-test-id="input-test-id-login"]')) {
+                console.log('[fetch.js] "Search all jobs" button found (no login form) — clicking');
+                _searchAllBtn.click();
+                return;
+            }
+
             const V = document['querySelector']('button[data-test-component=\x22StencilReactButton\x22][data-test-id=\x22consentBtn\x22]\x20div[data-test-component=\x22StencilReactRow\x22].hvh-careers-emotion-n1m10m');
             if (V)
                 V['click']();
@@ -1509,6 +1529,20 @@
 
             // Check if we've navigated away from login
             if (!window.location.href.includes('#/login') && !window.location.href.includes('auth.hiring')) return;
+
+            // v8.9.5.5: Check for "Welcome back" page first — just click "Search all jobs"
+            var _bodyText = (document.body && document.body.innerText) || '';
+            var _isWelcome = _bodyText.includes('Welcome back') || _bodyText.includes('continue where you left');
+            if (_isWelcome || !document.querySelector('input[data-test-id="input-test-id-login"]')) {
+                var _searchBtn = [...document.querySelectorAll('button, a')].find(function(el) {
+                    return /search all jobs/i.test(el.textContent);
+                });
+                if (_searchBtn) {
+                    console.log('[fetch.js] Auto-login watchdog: Welcome back page — clicking "Search all jobs"');
+                    _searchBtn.click();
+                    return; // Done
+                }
+            }
 
             // Need credentials
             if (!g || g === 'null' || !h || h === 'null') {
