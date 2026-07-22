@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 :: ── SniperEXT Auto-Updater ──────────────────────────────────────────────────
 :: Downloads the latest version from fix/auth-token-capture branch
@@ -31,9 +31,10 @@ echo Download complete.
 
 :: Clean temp extract folder
 if exist "%TEMP_EXTRACT%" rmdir /s /q "%TEMP_EXTRACT%"
+timeout /t 1 /nobreak >nul
 mkdir "%TEMP_EXTRACT%"
 
-:: Extract zip
+:: Extract zip using PowerShell
 echo Extracting...
 powershell -Command "Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '%TEMP_EXTRACT%' -Force"
 if %ERRORLEVEL% neq 0 (
@@ -43,15 +44,19 @@ if %ERRORLEVEL% neq 0 (
 )
 
 :: Find the extracted folder (GitHub names it SniperEXT-fix-auth-token-capture)
+set "EXTRACTED_DIR="
 for /d %%D in ("%TEMP_EXTRACT%\*") do set "EXTRACTED_DIR=%%D"
 
-:: Read version from manifest.json
-for /f "tokens=2 delims=:," %%A in ('findstr /C:"\"version\"" "%EXTRACTED_DIR%\manifest.json"') do (
-    set "RAW_VERSION=%%~A"
+if "%EXTRACTED_DIR%"=="" (
+    echo ERROR: Could not find extracted folder.
+    pause
+    exit /b 1
 )
-:: Clean up whitespace and quotes
-set "VERSION=%RAW_VERSION: =%"
-set "VERSION=%VERSION:"=%"
+
+echo Found: %EXTRACTED_DIR%
+
+:: Read version from manifest.json using PowerShell (more reliable)
+for /f "delims=" %%V in ('powershell -Command "(Get-Content '%EXTRACTED_DIR%\manifest.json' | ConvertFrom-Json).version"') do set "VERSION=%%V"
 
 echo.
 echo Detected version: v%VERSION%
@@ -60,6 +65,12 @@ echo.
 :: Set final folder name
 set "FINAL_DIR=%BASE_DIR%\SniperEXT_v%VERSION%"
 
+:: Create base directory if it doesn't exist
+if not exist "%BASE_DIR%" (
+    echo Creating directory: %BASE_DIR%
+    mkdir "%BASE_DIR%"
+)
+
 :: Remove old folder if exists
 if exist "%FINAL_DIR%" (
     echo Removing old version at: %FINAL_DIR%
@@ -67,20 +78,23 @@ if exist "%FINAL_DIR%" (
     timeout /t 2 /nobreak >nul
 )
 
-:: Create base directory if it doesn't exist
-if not exist "%BASE_DIR%" mkdir "%BASE_DIR%"
+:: Create target folder
+mkdir "%FINAL_DIR%"
 
-:: Copy extracted folder to final location (xcopy works better than move for permissions)
+:: Copy all files using robocopy (most reliable on Windows)
 echo Copying to: %FINAL_DIR%
-xcopy "%EXTRACTED_DIR%" "%FINAL_DIR%\" /E /I /Y /Q >nul
-if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to copy files to %FINAL_DIR%
-    echo Try running this .bat file as Administrator (right-click ^> Run as administrator)
+robocopy "%EXTRACTED_DIR%" "%FINAL_DIR%" /E /NFL /NDL /NJH /NJS /nc /ns /np >nul 2>&1
+
+:: Robocopy exit codes: 0-7 = success, 8+ = error
+if %ERRORLEVEL% GEQ 8 (
+    echo.
+    echo ERROR: Copy failed. Try running as Administrator.
+    echo Right-click this .bat file ^> Run as administrator
     pause
     exit /b 1
 )
 
-:: Cleanup
+:: Cleanup temp files
 del "%TEMP_ZIP%" 2>nul
 rmdir /s /q "%TEMP_EXTRACT%" 2>nul
 
