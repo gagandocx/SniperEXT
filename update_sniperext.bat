@@ -64,15 +64,18 @@ set "FINAL_DIR=%BASE_DIR%\SniperEXT_v%VERSION%"
 if exist "%FINAL_DIR%" (
     echo Removing old version at: %FINAL_DIR%
     rmdir /s /q "%FINAL_DIR%"
+    timeout /t 2 /nobreak >nul
 )
 
 :: Create base directory if it doesn't exist
 if not exist "%BASE_DIR%" mkdir "%BASE_DIR%"
 
-:: Move extracted folder to final location
-move "%EXTRACTED_DIR%" "%FINAL_DIR%" >nul
+:: Copy extracted folder to final location (xcopy works better than move for permissions)
+echo Copying to: %FINAL_DIR%
+xcopy "%EXTRACTED_DIR%" "%FINAL_DIR%\" /E /I /Y /Q >nul
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to move files to %FINAL_DIR%
+    echo ERROR: Failed to copy files to %FINAL_DIR%
+    echo Try running this .bat file as Administrator (right-click ^> Run as administrator)
     pause
     exit /b 1
 )
