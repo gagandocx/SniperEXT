@@ -208,11 +208,22 @@
             // Trigger a minor SPA navigation that will cause Amazon's app to call the API
             var currentUrl = window.location.href;
             if (currentUrl.includes('jobSearch')) {
-                // Force React to re-render by toggling hash slightly
-                window.location.hash = '#/jobSearch?_t=' + Date.now();
-                setTimeout(function() {
-                    window.location.hash = '#/jobSearch';
-                }, 500);
+                // v8.9.5.5: Use tab toggle instead of hash manipulation (which causes 400 errors)
+                try {
+                    var btns = document.querySelectorAll('button');
+                    for (var _i = 0; _i < btns.length; _i++) {
+                        if (btns[_i].textContent.trim() === 'Recommended') {
+                            btns[_i].click();
+                            setTimeout(function() {
+                                var btns2 = document.querySelectorAll('button');
+                                for (var _j = 0; _j < btns2.length; _j++) {
+                                    if (btns2[_j].textContent.trim() === 'All') { btns2[_j].click(); break; }
+                                }
+                            }, 800);
+                            break;
+                        }
+                    }
+                } catch(e) {}
             }
         } catch(e) {
             console.log('[fetch.js] SPA nav refresh failed:', e.message);

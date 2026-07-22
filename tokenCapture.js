@@ -150,29 +150,33 @@
         _lastRefreshTs = Date.now();
         _refreshCount++;
 
-        if (_refreshCount % 3 === 1) {
-            // Toggle Recommended → All
-            try {
-                var btns = document.querySelectorAll('button');
-                var recTab = null, allTab = null;
-                for (var i = 0; i < btns.length; i++) {
-                    var txt = btns[i].textContent.trim();
-                    if (txt === 'Recommended') recTab = btns[i];
-                    if (txt === 'All') allTab = btns[i];
-                }
-                if (recTab && allTab) {
-                    recTab.click();
-                    setTimeout(function() { allTab.click(); }, 800);
-                    return;
-                }
-            } catch(e) {}
-        }
+        // v8.9.5.5: ALWAYS use tab toggle — URL manipulation breaks Amazon's SPA
+        // (appending ?r=timestamp causes 400 Bad Request errors)
+        try {
+            var btns = document.querySelectorAll('button');
+            var recTab = null, allTab = null;
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim();
+                if (txt === 'Recommended') recTab = btns[i];
+                if (txt === 'All') allTab = btns[i];
+            }
+            if (recTab && allTab) {
+                recTab.click();
+                setTimeout(function() { allTab.click(); }, 800);
+                return;
+            }
+            // If only "All" tab exists (already selected), click it to force re-fetch
+            if (allTab) {
+                allTab.click();
+                return;
+            }
+        } catch(e) {}
 
-        // URL refresh
-        if (window.location.hash.includes('jobSearch')) {
-            var base = window.location.href.split('?')[0];
-            window.location.replace(base + '?r=' + Date.now());
-        }
+        // Last resort: scroll to trigger lazy-load (NOT URL change)
+        try {
+            window.scrollBy(0, 1);
+            setTimeout(function() { window.scrollBy(0, -1); }, 300);
+        } catch(e) {}
     }
 
     console.log('[SS] v8.9.1.0 ready — Response.prototype interceptor active');

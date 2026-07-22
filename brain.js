@@ -363,9 +363,9 @@
             if (recTab && allTab) {
                 recTab.click();
                 setTimeout(function() { allTab.click(); }, 1000);
-            } else {
-                // Fallback: reload page
-                window.location.replace(window.location.href.split('?')[0] + '?r=' + Date.now());
+            } else if (allTab) {
+                // Just re-click All to force a re-fetch
+                allTab.click();
             }
         }
 
