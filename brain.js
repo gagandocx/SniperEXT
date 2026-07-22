@@ -343,28 +343,54 @@
     function checkScanHealth() {
         if (_currentState !== 'JOBSEARCH_SCANNING') return;
 
+        // ── Check for error messages on the page ────────────────────────────
+        var bodyText = (document.body && document.body.innerText) || '';
+        if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
+            console.log(LOG_PREFIX, '🔄 "Problem loading page" detected — reloading');
+            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            return;
+        }
+
+        // ── Ensure "All" tab is selected (not stuck on "Recommended") ───────
+        var allTab = null, recTab = null;
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+            var txt = btns[i].textContent.trim();
+            if (txt === 'All') allTab = btns[i];
+            if (txt === 'Recommended') recTab = btns[i];
+        }
+        // If Recommended appears selected (has aria-selected or different style)
+        // and All exists, click All
+        if (recTab && allTab) {
+            var recSelected = recTab.getAttribute('aria-selected') === 'true' ||
+                              recTab.classList.contains('active') ||
+                              recTab.closest('[aria-selected="true"]');
+            if (recSelected) {
+                console.log(LOG_PREFIX, '🔧 "Recommended" is selected — switching to "All"');
+                allTab.click();
+            }
+        }
+
         var storeEl = document.getElementById('__ss_token_store');
         if (!storeEl) return; // tokenCapture.js not loaded yet
 
         var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
         var staleness = Date.now() - lastTs;
 
-        // If no intercept for 30+ seconds while on jobSearch, something is wrong
+        // If data stale for 60+ seconds — session likely expired, need full reload
+        if (lastTs > 0 && staleness > 60000) {
+            console.log(LOG_PREFIX, '🔄 Data stale for', Math.round(staleness/1000) + 's — session likely expired, RELOADING page');
+            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            return;
+        }
+
+        // If no intercept for 30+ seconds while on jobSearch, try tab toggle
         if (lastTs > 0 && staleness > 30000) {
             console.log(LOG_PREFIX, '⚠️ Data stale for', Math.round(staleness/1000) + 's — triggering refresh');
-            // Click Recommended then All to trigger new API call
-            var btns = document.querySelectorAll('button');
-            var recTab = null, allTab = null;
-            for (var i = 0; i < btns.length; i++) {
-                var txt = btns[i].textContent.trim();
-                if (txt === 'Recommended') recTab = btns[i];
-                if (txt === 'All') allTab = btns[i];
-            }
             if (recTab && allTab) {
                 recTab.click();
                 setTimeout(function() { allTab.click(); }, 1000);
             } else if (allTab) {
-                // Just re-click All to force a re-fetch
                 allTab.click();
             }
         }
@@ -372,13 +398,7 @@
         // If no intercept has EVER happened after 15s on jobSearch, click All tab
         if (lastTs === 0 && stateAge() > 15000) {
             console.log(LOG_PREFIX, '⚠️ No intercepts ever — clicking All tab');
-            var btns2 = document.querySelectorAll('button');
-            for (var j = 0; j < btns2.length; j++) {
-                if (btns2[j].textContent.trim() === 'All') {
-                    btns2[j].click();
-                    break;
-                }
-            }
+            if (allTab) allTab.click();
         }
     }
 
