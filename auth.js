@@ -489,6 +489,8 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
         }
         console.log('[auth.js] OTP flow complete — redirecting to jobSearch');
         // Direct redirect to jobSearch after successful verification
+        // v8.9.5.2: If this is a re-login background tab, just navigate to jobSearch
+        // so background.js can detect it and close the tab automatically.
         setTimeout(function() {
             window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
         }, 3000);

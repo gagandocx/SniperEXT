@@ -231,6 +231,72 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return true;
     }
 
+    // ── Re-login in a NEW background tab (v8.9.5.2) ───────────────────────────
+    // Opens auth page in a new tab, lets fetch.js + auth.js auto-fill login,
+    // then closes the tab once login completes (reaches jobSearch).
+    // The original scanning tab is NEVER navigated away.
+    if (a['action'] === 'reloginInNewTab') {
+        (async function() {
+            try {
+                // Determine auth URL based on stored country
+                var countryData = await chrome['storage']['local']['get']('__country');
+                var country = countryData['__country'] || 'Canada';
+                var authUrl = country === 'United States'
+                    ? 'https://auth.hiring.amazon.com/#/login'
+                    : 'https://auth.hiring.amazon.ca/#/login';
+
+                console.log('[bg] reloginInNewTab — opening:', authUrl);
+
+                // Open auth page in a new NON-active tab (won't steal focus)
+                var newTab = await new Promise(function(res) {
+                    chrome['tabs']['create']({ 'url': authUrl, 'active': false }, res);
+                });
+                var reloginTabId = newTab['id'];
+
+                // Mark this tab as a re-login tab so auth.js knows to close it
+                // instead of redirecting to jobSearch
+                chrome['storage']['local']['set']({ '__reloginTabId': reloginTabId });
+
+                // Monitor the tab — when it reaches jobSearch or after 3 min timeout, close it
+                var _checkCount = 0;
+                var _maxChecks = 90; // 90 × 2s = 3 minutes max
+                var _pollTimer = setInterval(function() {
+                    _checkCount++;
+                    if (_checkCount > _maxChecks) {
+                        // Timeout — close tab regardless
+                        console.log('[bg] reloginInNewTab — timeout, closing tab');
+                        clearInterval(_pollTimer);
+                        chrome['tabs']['remove'](reloginTabId, function() {});
+                        chrome['storage']['local']['remove']('__reloginTabId');
+                        return;
+                    }
+                    chrome['tabs']['get'](reloginTabId, function(tab) {
+                        if (chrome['runtime']['lastError'] || !tab) {
+                            // Tab was closed manually or crashed
+                            console.log('[bg] reloginInNewTab — tab gone, cleaning up');
+                            clearInterval(_pollTimer);
+                            chrome['storage']['local']['remove']('__reloginTabId');
+                            return;
+                        }
+                        // Check if tab reached jobSearch (login complete!)
+                        if (tab['url'] && tab['url'].includes('app#/jobSearch')) {
+                            console.log('[bg] reloginInNewTab — login complete! Closing tab.');
+                            clearInterval(_pollTimer);
+                            chrome['tabs']['remove'](reloginTabId, function() {});
+                            chrome['storage']['local']['remove']('__reloginTabId');
+                        }
+                    });
+                }, 2000);
+
+                c({ success: true, tabId: reloginTabId });
+            } catch(err) {
+                console.error('[bg] reloginInNewTab error:', err.message);
+                c({ error: err.message });
+            }
+        })();
+        return true;
+    }
+
     if (a['action'] === 'refreshGmailTab') {
         chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
             if (!tabs || !tabs[0]) {

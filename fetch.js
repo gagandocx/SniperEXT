@@ -1657,28 +1657,46 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
 
     // After jobSearch page loads: handle post-login activation + click "All" tab
     if (window.location.href.includes('app#/jobSearch')) {
-        chrome.storage.local.get(['_pendingJobReloadUntil', '__ap'], function(d) {
+        chrome.storage.local.get(['_pendingJobReloadUntil', '__ap', '__reloginTabId'], function(d) {
             // Clear any reload flags to prevent loops
             chrome.storage.local.remove('_pendingJobReloadUntil');
 
-            // Always activate and click "All" tab after arriving at jobSearch
-            if (d.__ap) {
-                console.log('[fetch.js] jobSearch loaded — activating + clicking All tab');
-                chrome.runtime.sendMessage({ action: 'activate', status: true });
-
-                // Click "All" tab after 2s to start searching all jobs
-                setTimeout(function() {
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].textContent.trim() === 'All') {
-                            btns[i].click();
-                            console.log('[fetch.js] Clicked "All" tab');
-                            break;
-                        }
+            // v8.9.5.2: If this is a re-login background tab, do NOT activate scanning.
+            // background.js will detect we reached jobSearch and close this tab.
+            if (d.__reloginTabId) {
+                chrome.runtime.sendMessage({ action: 'getTabId' }, function(resp) {
+                    if (resp && resp.tabId && resp.tabId === d.__reloginTabId) {
+                        console.log('[fetch.js] This is a re-login tab — NOT activating scan. Will be closed by background.js.');
+                        return; // Do nothing — background.js polls and closes us
                     }
-                }, 2000);
+                    // Not the re-login tab — proceed normally
+                    _activateJobSearch(d);
+                });
+                return;
             }
+
+            _activateJobSearch(d);
         });
+    }
+
+    function _activateJobSearch(d) {
+        // Always activate and click "All" tab after arriving at jobSearch
+        if (d.__ap) {
+            console.log('[fetch.js] jobSearch loaded — activating + clicking All tab');
+            chrome.runtime.sendMessage({ action: 'activate', status: true });
+
+            // Click "All" tab after 2s to start searching all jobs
+            setTimeout(function() {
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    if (btns[i].textContent.trim() === 'All') {
+                        btns[i].click();
+                        console.log('[fetch.js] Clicked "All" tab');
+                        break;
+                    }
+                }
+            }, 2000);
+        }
     }
 
     function checkRedirect() {
@@ -1761,20 +1779,18 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
     // 1. Proactive re-login every 40 minutes to prevent session expiry
     // Amazon sessions expire after ~1 hour. Re-authenticating at 40min
     // ensures the session is always fresh when a shift appears.
+    // FIXED v8.9.5.2: Re-login happens in a NEW background tab so scanning
+    // continues uninterrupted on the current tab.
     var _reloginInterval = 40 * 60 * 1000; // 40 minutes
     setInterval(function() {
         if (!window['_ss_wizard_active']) {
-            console.log('[health] 40-min re-login — refreshing session');
-            // Navigate to auth login page — fetch.js will auto-fill email/PIN
-            var authUrl = window.location.hostname.includes('.com')
-                ? 'https://auth.hiring.amazon.com/#/login'
-                : 'https://auth.hiring.amazon.ca/#/login';
-            window.location.href = authUrl;
+            console.log('[health] 40-min re-login — opening auth in background tab');
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
         }
     }, _reloginInterval);
 
     // Also do the first re-login check — log when next re-login will happen
-    console.log('[health] Next auto re-login in 40 minutes');
+    console.log('[health] Next auto re-login in 40 minutes (background tab)');
 
     // 2. Bug 1 fix: Stuck on homepage without login → redirect to auth login
     function checkLoginRequired() {
