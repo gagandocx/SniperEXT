@@ -1452,6 +1452,12 @@
                 C();
                 return;
             }
+            // v8.9.5.2: Even if not active, auto-fill login page if we have credentials
+            // This fixes the bug where user has to toggle extension off/on to trigger login
+            if (g && h && window.location.href.includes('#/login')) {
+                console.log('[fetch.js] On login page with credentials — auto-filling (even if inactive)');
+                C();
+            }
         }
     }), N['postMessage']({ 'action': 'fetch_info' });
 
@@ -1483,6 +1489,74 @@
                 window.location.reload();
             }
         }, 30000);
+    })();
+    // ─────────────────────────────────────────────────────────────
+
+    // ── v8.9.5.2: Auto-login watchdog for auth pages ─────────────────────────
+    // When on auth.hiring.amazon.ca/#/login with saved credentials,
+    // automatically fill email + PIN without needing to toggle extension.
+    // Retries every 3s until the login form is filled or page navigates away.
+    (function() {
+        var url = window.location.href;
+        if (!url.includes('auth.hiring.amazon') && !url.includes('#/login')) return;
+
+        var _loginAttempts = 0;
+        var _loginMaxAttempts = 10; // 10 × 3s = 30s max
+
+        function attemptAutoLogin() {
+            _loginAttempts++;
+            if (_loginAttempts > _loginMaxAttempts) return; // give up
+
+            // Check if we've navigated away from login
+            if (!window.location.href.includes('#/login') && !window.location.href.includes('auth.hiring')) return;
+
+            // Need credentials
+            if (!g || g === 'null' || !h || h === 'null') {
+                // Try loading from storage directly
+                chrome['storage']['local']['get'](['__un', '__pw'], function(data) {
+                    if (data['__un'] && data['__pw']) {
+                        g = data['__un'];
+                        h = data['__pw'];
+                        console.log('[fetch.js] Auto-login watchdog: loaded credentials from storage');
+                        _doLoginFill();
+                    }
+                });
+                return;
+            }
+
+            _doLoginFill();
+        }
+
+        function _doLoginFill() {
+            // Check if email input exists and is empty (not yet filled)
+            var emailInput = document.querySelector('input[data-test-id="input-test-id-login"]');
+            if (emailInput && !emailInput.value) {
+                console.log('[fetch.js] Auto-login watchdog: filling email + PIN');
+                C(); // Run the full login flow
+                return; // Don't retry — C() handles everything
+            }
+
+            // Check if PIN input exists and is empty (email was filled but PIN wasn't)
+            var pinInput = document.querySelector('input[data-test-id="input-test-id-pin"]');
+            if (pinInput && !pinInput.value && h) {
+                console.log('[fetch.js] Auto-login watchdog: filling PIN');
+                var _setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                _setter.call(pinInput, h);
+                pinInput.dispatchEvent(new Event('input', { bubbles: true }));
+                pinInput.dispatchEvent(new Event('change', { bubbles: true }));
+                setTimeout(function() {
+                    var continueBtn = document.querySelector('button[data-test-id="button-continue"]');
+                    if (continueBtn) continueBtn.click();
+                }, 800);
+                return;
+            }
+
+            // Neither input found yet — page still loading, retry
+            setTimeout(attemptAutoLogin, 3000);
+        }
+
+        // Start after 2s (give page time to render)
+        setTimeout(attemptAutoLogin, 2000);
     })();
     // ─────────────────────────────────────────────────────────────
 
