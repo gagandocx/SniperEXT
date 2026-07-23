@@ -339,7 +339,7 @@
             case 'RELOGIN':
                 logAction('ai', 'AI says session expired — re-logging in', true);
                 chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-                setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+                setTimeout(function() { chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }); window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
                 break;
             case 'WAIT':
                 var sec = parseInt(actionParam) || 5;
@@ -580,6 +580,8 @@
             setTimeout(function() {
                 logAction('session', 'Re-login wait complete — reloading to pick up fresh session');
                 _reloginInProgress = false;
+                // Close extra tabs before navigating
+                chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
                 window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
             }, 35000);
         }
@@ -625,6 +627,10 @@
         if (newState === 'JOBSEARCH_SCANNING') {
             _consecutiveStaleChecks = 0;
             _reloginInProgress = false;
+            // Clean up any extra Amazon tabs left over from re-login or errors
+            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }, function(r) {
+                if (r && r.closed > 0) logAction('cleanup', 'Closed ' + r.closed + ' extra Amazon tab(s)');
+            });
         }
     }
 
@@ -956,6 +962,12 @@
         expandSearch: function() { _searchExpanded = false; _zeroShiftsSince = Date.now() - _expandAfterMs - 1; checkAutoExpand(); },
         // Force session check now
         checkSession: function() { _lastSessionCheck = 0; _consecutiveStaleChecks = 0; checkSessionAlive(); },
+        // Close all extra Amazon tabs (keep only this one)
+        cleanTabs: function() {
+            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }, function(r) {
+                console.log(LOG_PREFIX, '🧹 Closed', r && r.closed || 0, 'extra tabs');
+            });
+        },
         // Reset all brain data
         reset: function() {
             _activityLog = []; _timings = {}; _failureHistory = {}; _recoveryMemory = {};

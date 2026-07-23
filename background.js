@@ -231,6 +231,27 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return true;
     }
 
+    // ── Close duplicate Amazon tabs — keep only the active one ─────────────────
+    if (a['action'] === 'closeExtraAmazonTabs') {
+        var keepTabId = b && b.tab ? b.tab.id : null;
+        chrome['tabs']['query']({}, function(allTabs) {
+            var amazonTabs = allTabs.filter(function(t) {
+                return t.url && (t.url.includes('hiring.amazon.ca') || t.url.includes('hiring.amazon.com'));
+            });
+            console.log('[bg] Found', amazonTabs.length, 'Amazon tabs, keeping tab:', keepTabId);
+            var closed = 0;
+            amazonTabs.forEach(function(t) {
+                if (t.id !== keepTabId) {
+                    chrome['tabs']['remove'](t.id, function() {});
+                    closed++;
+                }
+            });
+            console.log('[bg] Closed', closed, 'extra Amazon tabs');
+            c({ closed: closed, kept: keepTabId });
+        });
+        return true;
+    }
+
     // ── Re-login in a NEW background tab (v8.9.5.2) ───────────────────────────
     // Opens auth page in a new tab, lets fetch.js + auth.js auto-fill login,
     // then closes the tab once login completes (reaches jobSearch).
