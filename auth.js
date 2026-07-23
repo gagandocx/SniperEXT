@@ -278,19 +278,29 @@
                         model: 'qwen/qwen3.6-27b',
                         max_tokens: 800, temperature: 0.1,
                         messages: [
-                            { role: 'system', content: 'You are a CAPTCHA solver. Be brief. ALWAYS end with FINAL ANSWER: line containing exactly 5 numbers.' },
+                            { role: 'system', content: 'You are a precise CAPTCHA solver. You MUST describe every single cell before answering. IMPORTANT: You MUST select EXACTLY 5 cells. Always end with FINAL ANSWER: on its own line.' },
                             { role: 'user', content: [
                                 { type: 'image_url', image_url: { url: cropUrl } },
-                                { type: 'text', text: `CAPTCHA: 3x3 grid, 9 images. You MUST select EXACTLY 5.
+                                { type: 'text', text: `Solve this CAPTCHA. The image shows a popup with a 3x3 grid.
 
-Task: Find the underlined word after "Choose all the ___".
+STEP 1 - Read the task:
+Find the underlined word in "Choose all the ___". Write: Task: [word]
 
-Briefly describe each cell (1 word each):
-1: _ 2: _ 3: _ 4: _ 5: _ 6: _ 7: _ 8: _ 9: _
+STEP 2 - Describe EVERY cell (you must fill in all 9):
+Cell 1: [describe what you see]
+Cell 2: [describe what you see]
+Cell 3: [describe what you see]
+Cell 4: [describe what you see]
+Cell 5: [describe what you see]
+Cell 6: [describe what you see]
+Cell 7: [describe what you see]
+Cell 8: [describe what you see]
+Cell 9: [describe what you see]
 
-Select the 5 cells that BEST match the task word. You MUST pick exactly 5.
+STEP 3 - Select EXACTLY 5 cells:
+Which cells match the Task word? You MUST pick EXACTLY 5 cells. Even if unsure, always pick 5.
 
-FINAL ANSWER: [5 numbers, comma separated]` }
+FINAL ANSWER: [exactly 5 numbers, e.g. 1,2,4,7,9]` }
                             ]}
                         ]
                     })
@@ -433,11 +443,11 @@ FINAL ANSWER: [5 numbers, comma separated]` }
             toast('✅ <b style="color:#4CAF50;">Submitted: ' + positions.join(',') + ' | ' + (result.confirmStatus || '?') + '</b>', 5000);
         }
 
-        // ── H: Wait for CAPTCHA outcome (up to 6s) ────────────────────────────
+        // ── H: Wait for CAPTCHA outcome (up to 3s) ────────────────────────────
         console.log('[auth.js] waiting for outcome...');
         let outcome = 'pending';
-        for (let w = 0; w < 12; w++) {
-            await sleep(500);
+        for (let w = 0; w < 8; w++) {
+            await sleep(400);
             const txt = document.body.innerText;
             // Full-page: success = page navigates away (no more "Choose all" text)
             if (isFullPage) {
@@ -699,9 +709,9 @@ FINAL ANSWER: [5 numbers, comma separated]` }
             try {
                 await handleCaptcha();
             } finally {
-                // Wait 4s after solve attempt before allowing retry
-                // This prevents watcher from re-triggering during cell clicks / Confirm
-                await sleep(4000);
+                // Wait 1.5s after solve attempt before allowing retry
+                // Quick retry — if wrong, new grid appears fast
+                await sleep(1500);
                 _captchaHandling = false;
                 console.log('[auth.js] captchaWatcher ready for retry');
             }
