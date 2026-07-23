@@ -1895,21 +1895,10 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
 (function() {
     'use strict';
 
-    // 1. Proactive re-login every 40 minutes to prevent session expiry
-    // Amazon sessions expire after ~1 hour. Re-authenticating at 40min
-    // ensures the session is always fresh when a shift appears.
-    // FIXED v8.9.5.2: Re-login happens in a NEW background tab so scanning
-    // continues uninterrupted on the current tab.
-    var _reloginInterval = 40 * 60 * 1000; // 40 minutes
-    setInterval(function() {
-        if (!window['_ss_wizard_active']) {
-            console.log('[health] 40-min re-login — opening auth in background tab');
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-        }
-    }, _reloginInterval);
-
-    // Also do the first re-login check — log when next re-login will happen
-    console.log('[health] Next auto re-login in 40 minutes (background tab)');
+    // 1. Session refresh is now handled by brain.js (smart session monitor)
+    // brain.js continuously checks if session is alive and only re-logins when it ACTUALLY dies.
+    // No more blind 40-minute timer. Scanning continues uninterrupted as long as session is valid.
+    console.log('[health] Session monitoring delegated to brain.js (smart session monitor)');
 
     // 2. Bug 1 fix: Stuck on homepage without login → redirect to auth login
     function checkLoginRequired() {

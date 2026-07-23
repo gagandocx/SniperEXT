@@ -495,26 +495,75 @@
 
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // FEATURE 10: PROACTIVE SESSION REFRESH — Refresh BEFORE expiry
+    // FEATURE 10: SMART SESSION MONITOR — Only re-login when session ACTUALLY dies
     // ═══════════════════════════════════════════════════════════════════════════
-    var _sessionStartTs = Date.now();
-    var _SESSION_LIFETIME = 35 * 60 * 1000; // Refresh at 35 min (before 40-min expiry)
-    var _proactiveRefreshDone = false;
+    // Instead of blindly re-logging every 35/40 min, we CONTINUOUSLY check if
+    // the session is alive by monitoring:
+    //  - Fresh 200 responses from API (intercepts are happening)
+    //  - No 403 errors
+    //  - Page not showing "Problem loading" error
+    // If session is alive → do nothing, keep scanning.
+    // If session dies → re-login immediately.
+    var _lastSessionCheck = 0;
+    var _SESSION_CHECK_INTERVAL = 15000; // Check every 15 seconds
+    var _consecutiveStaleChecks = 0;
+    var _reloginInProgress = false;
 
-    function checkProactiveRefresh() {
+    function checkSessionAlive() {
         if (_currentState !== 'JOBSEARCH_SCANNING') return;
-        if (_proactiveRefreshDone) return;
+        if (_reloginInProgress) return;
+        if (Date.now() - _lastSessionCheck < _SESSION_CHECK_INTERVAL) return;
+        _lastSessionCheck = Date.now();
 
-        var sessionAge = Date.now() - _sessionStartTs;
-        if (sessionAge > _SESSION_LIFETIME) {
-            _proactiveRefreshDone = true;
-            logAction('refresh', 'Proactive session refresh at ' + Math.round(sessionAge/60000) + ' min');
-            brainToast('🔄 <b style="color:#22d3ee;">Refreshing session proactively...</b>');
+        // Check 1: Is intercept data fresh?
+        var storeEl = document.getElementById('__ss_token_store');
+        var lastTs = storeEl ? parseInt(storeEl.getAttribute('data-ts') || '0') : 0;
+        var staleness = lastTs > 0 ? (Date.now() - lastTs) : 999999;
+        var isFresh = staleness < 15000; // Fresh if last intercept was < 15s ago
+
+        // Check 2: Is the page showing an error?
+        var bodyText = (document.body && document.body.innerText) || '';
+        var hasError = /problem loading page|server didn't respond|try refreshing/i.test(bodyText);
+
+        // ── Session is ALIVE ─────────────────────────────────────────────────
+        if (isFresh && !hasError) {
+            _consecutiveStaleChecks = 0;
+            return; // All good, keep scanning
+        }
+
+        // ── Session might be dying ───────────────────────────────────────────
+        _consecutiveStaleChecks++;
+
+        // First stale check: just try tab toggle (might be a hiccup)
+        if (_consecutiveStaleChecks === 1 && !hasError) {
+            logAction('session', 'Data stale (' + Math.round(staleness/1000) + 's) — trying tab toggle');
+            var btns = document.querySelectorAll('button');
+            var recTab = null, allTab = null;
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim();
+                if (txt === 'Recommended') recTab = btns[i];
+                if (txt === 'All') allTab = btns[i];
+            }
+            if (recTab && allTab) { recTab.click(); setTimeout(function() { allTab.click(); }, 1000); }
+            else if (allTab) allTab.click();
+            return;
+        }
+
+        // 2+ consecutive stale checks OR page error → session is DEAD, re-login
+        if (_consecutiveStaleChecks >= 2 || hasError) {
+            _consecutiveStaleChecks = 0;
+            _reloginInProgress = true;
+            var reason = hasError ? 'page error' : 'stale for ' + Math.round(staleness/1000) + 's';
+            logAction('session', '❌ Session DEAD (' + reason + ') — re-logging in background tab');
+            brainToast('🔄 <b style="color:#f59e0b;">Session expired — re-logging in...</b>', 8000);
+            recordError();
+
             chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-            // After re-login, reload this tab to pick up fresh cookies
+
+            // Wait for re-login to complete, then reload this tab
             setTimeout(function() {
-                _sessionStartTs = Date.now(); // Reset timer
-                _proactiveRefreshDone = false;
+                logAction('session', 'Re-login wait complete — reloading to pick up fresh session');
+                _reloginInProgress = false;
                 window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
             }, 35000);
         }
@@ -555,10 +604,10 @@
         _aiEscalated = false;
         chrome.storage.local.set({ '__brain_state': newState, '__brain_ts': _stateEnteredAt });
 
-        // Reset session timer when we arrive at jobSearch
+        // Reset session monitor when we arrive at jobSearch
         if (newState === 'JOBSEARCH_SCANNING') {
-            _sessionStartTs = Date.now();
-            _proactiveRefreshDone = false;
+            _consecutiveStaleChecks = 0;
+            _reloginInProgress = false;
         }
     }
 
@@ -809,7 +858,7 @@
         checkScanHealth();
         checkAutoExpand();
         checkReloginTab();
-        checkProactiveRefresh();
+        checkSessionAlive();
         updateRingWithHealth();
 
         // Check state timeout (using smart timing if available)
@@ -862,8 +911,8 @@
         askAI: function() { _askAI(_currentState); },
         // Force expand search
         expandSearch: function() { _searchExpanded = false; _zeroShiftsSince = Date.now() - _expandAfterMs - 1; checkAutoExpand(); },
-        // Force session refresh
-        refreshSession: function() { _proactiveRefreshDone = false; _sessionStartTs = 0; checkProactiveRefresh(); },
+        // Force session check now
+        checkSession: function() { _lastSessionCheck = 0; _consecutiveStaleChecks = 0; checkSessionAlive(); },
         // Reset all brain data
         reset: function() {
             _activityLog = []; _timings = {}; _failureHistory = {}; _recoveryMemory = {};
