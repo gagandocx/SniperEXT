@@ -278,10 +278,10 @@
                         model: 'qwen/qwen3.6-27b',
                         max_tokens: 500, temperature: 0.1,
                         messages: [
-                            { role: 'system', content: 'You are a precise CAPTCHA solver. You MUST describe every single cell before answering. Always end with FINAL ANSWER: on its own line.' },
+                            { role: 'system', content: 'You are a precise CAPTCHA solver. You MUST describe every single cell before answering. IMPORTANT: The answer MUST contain EXACTLY 5 cells — no more, no less. Always end with FINAL ANSWER: on its own line.' },
                             { role: 'user', content: [
                                 { type: 'image_url', image_url: { url: cropUrl } },
-                                { type: 'text', text: `Solve this CAPTCHA. The image shows a popup with a 3x3 grid.
+                                { type: 'text', text: `Solve this CAPTCHA. The image shows a 3x3 grid (9 images).
 
 STEP 1 - Read the task:
 Find the underlined word in "Choose all the ___". Write: Task: [word]
@@ -297,10 +297,10 @@ Cell 7: [describe what you see]
 Cell 8: [describe what you see]
 Cell 9: [describe what you see]
 
-STEP 3 - Select:
-Which cells match the Task word? Only pick cells where that object is clearly the main subject.
+STEP 3 - Select EXACTLY 5 cells:
+You MUST pick EXACTLY 5 cells that best match the Task word. Even if you're unsure about some, you must select 5 total. Pick the 5 most likely matches. Never pick fewer than 5, never more than 5.
 
-FINAL ANSWER: [e.g. 1,3,7] or NONE` }
+FINAL ANSWER: [exactly 5 numbers, e.g. 1,3,5,7,9]` }
                             ]}
                         ]
                     })
@@ -330,6 +330,24 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
             }
             if (fm && fm[1] && fm[1].toUpperCase() !== 'NONE') {
                 positions = fm[1].split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= 9);
+            }
+
+            // Enforce exactly 5 selections — pad or trim as needed
+            if (positions.length > 0 && positions.length !== 5) {
+                console.log('[auth.js] AI gave', positions.length, 'positions — adjusting to 5');
+                if (positions.length > 5) {
+                    // Too many — keep first 5
+                    positions = positions.slice(0, 5);
+                } else {
+                    // Too few — add random cells that aren't already selected
+                    var available = [1,2,3,4,5,6,7,8,9].filter(n => positions.indexOf(n) === -1);
+                    while (positions.length < 5 && available.length > 0) {
+                        var randIdx = Math.floor(Math.random() * available.length);
+                        positions.push(available[randIdx]);
+                        available.splice(randIdx, 1);
+                    }
+                }
+                console.log('[auth.js] Adjusted to 5 positions:', positions);
             }
         } catch(e) { toast('❌ Groq error: ' + e.message, 5000); return; }
 

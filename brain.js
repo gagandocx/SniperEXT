@@ -260,7 +260,7 @@
                     model: 'qwen/qwen3.6-27b', max_tokens: 500, temperature: 0.1,
                     messages: [{
                         role: 'system',
-                        content: 'You are ShiftSniper Brain AI. The Amazon job-hunting extension is STUCK. Analyze the screenshot and context. Your goal: get to https://hiring.amazon.ca/app#/jobSearch.\n\nProvide:\n1. DIAGNOSIS: one line describing what you see\n2. ACTION: exactly one of:\n   CLICK_BUTTON | button text\n   CLICK_LINK | link text\n   FILL_INPUT | css-selector | value\n   NAVIGATE | url\n   RELOAD | reason\n   WAIT | seconds\n   RELOGIN | session expired\n\nRecent brain log: ' + pageContext.recentLog.join('; ') + '\nHealth score: ' + pageContext.healthScore + '/100'
+                        content: 'You are ShiftSniper Brain AI. The Amazon job-hunting extension is STUCK. Analyze the screenshot and context. Your goal: get to https://hiring.amazon.ca/app#/jobSearch.\n\nIf you see a CAPTCHA grid ("Choose all the..."): the correct answer is ALWAYS exactly 5 images. Use ACTION: CLICK_BUTTON | Confirm after selecting.\n\nProvide:\n1. DIAGNOSIS: one line describing what you see\n2. ACTION: exactly one of:\n   CLICK_BUTTON | button text\n   CLICK_LINK | link text\n   FILL_INPUT | css-selector | value\n   NAVIGATE | url\n   RELOAD | reason\n   WAIT | seconds\n   RELOGIN | session expired\n\nRecent brain log: ' + pageContext.recentLog.join('; ') + '\nHealth score: ' + pageContext.healthScore + '/100'
                     }, {
                         role: 'user',
                         content: [
