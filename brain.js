@@ -17,6 +17,14 @@
 (function() {
     'use strict';
 
+    // Early bail-out check — if chrome.storage isn't available, we're in wrong context
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        console.warn('[brain] chrome.storage not available — brain.js cannot run in this context');
+        return;
+    }
+
+    try { // Wrap entire brain in try-catch to prevent silent crashes
+
     var LOG_PREFIX = '[brain]';
     var POLL_INTERVAL = 4000;
 
@@ -928,5 +936,9 @@
             console.log(LOG_PREFIX, '🧹 Brain reset complete');
         }
     };
+
+    } catch(e) {
+        console.error('[brain] FATAL ERROR during initialization:', e.message, e.stack);
+    }
 
 })();
