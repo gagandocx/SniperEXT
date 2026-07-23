@@ -343,11 +343,21 @@
     function checkScanHealth() {
         if (_currentState !== 'JOBSEARCH_SCANNING') return;
 
+        // ── Cooldown: don't take action more than once per 60 seconds ───────
+        if (_lastAction && (Date.now() - _lastAction < 60000)) return;
+
         // ── Check for error messages on the page ────────────────────────────
         var bodyText = (document.body && document.body.innerText) || '';
         if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
-            console.log(LOG_PREFIX, '🔄 "Problem loading page" detected — reloading');
-            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            console.log(LOG_PREFIX, '🔄 "Problem loading page" detected — session expired, triggering re-login');
+            _lastAction = Date.now();
+            // Don't reload (same page = same error). Re-login to get fresh session.
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            // Wait 30s for re-login to complete, then reload THIS page
+            setTimeout(function() {
+                console.log(LOG_PREFIX, '🔄 Post re-login — reloading page to pick up fresh session');
+                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            }, 30000);
             return;
         }
 
@@ -359,8 +369,6 @@
             if (txt === 'All') allTab = btns[i];
             if (txt === 'Recommended') recTab = btns[i];
         }
-        // If Recommended appears selected (has aria-selected or different style)
-        // and All exists, click All
         if (recTab && allTab) {
             var recSelected = recTab.getAttribute('aria-selected') === 'true' ||
                               recTab.classList.contains('active') ||
@@ -372,21 +380,27 @@
         }
 
         var storeEl = document.getElementById('__ss_token_store');
-        if (!storeEl) return; // tokenCapture.js not loaded yet
+        if (!storeEl) return;
 
         var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
         var staleness = Date.now() - lastTs;
 
-        // If data stale for 60+ seconds — session likely expired, need full reload
-        if (lastTs > 0 && staleness > 60000) {
-            console.log(LOG_PREFIX, '🔄 Data stale for', Math.round(staleness/1000) + 's — session likely expired, RELOADING page');
-            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+        // If data stale for 90+ seconds — session expired, need re-login (not just reload)
+        if (lastTs > 0 && staleness > 90000) {
+            console.log(LOG_PREFIX, '🔄 Data stale for', Math.round(staleness/1000) + 's — session expired, re-logging in');
+            _lastAction = Date.now();
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            // After re-login completes (30s), reload this tab to pick up fresh cookies
+            setTimeout(function() {
+                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            }, 30000);
             return;
         }
 
-        // If no intercept for 30+ seconds while on jobSearch, try tab toggle
+        // If stale for 30-90s — try tab toggle first (might just be a hiccup)
         if (lastTs > 0 && staleness > 30000) {
-            console.log(LOG_PREFIX, '⚠️ Data stale for', Math.round(staleness/1000) + 's — triggering refresh');
+            console.log(LOG_PREFIX, '⚠️ Data stale for', Math.round(staleness/1000) + 's — triggering tab toggle');
+            _lastAction = Date.now();
             if (recTab && allTab) {
                 recTab.click();
                 setTimeout(function() { allTab.click(); }, 1000);
@@ -398,6 +412,7 @@
         // If no intercept has EVER happened after 15s on jobSearch, click All tab
         if (lastTs === 0 && stateAge() > 15000) {
             console.log(LOG_PREFIX, '⚠️ No intercepts ever — clicking All tab');
+            _lastAction = Date.now();
             if (allTab) allTab.click();
         }
     }
