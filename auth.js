@@ -276,31 +276,21 @@
                     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + groqKey },
                     body: JSON.stringify({
                         model: 'qwen/qwen3.6-27b',
-                        max_tokens: 500, temperature: 0.1,
+                        max_tokens: 800, temperature: 0.1,
                         messages: [
-                            { role: 'system', content: 'You are a precise CAPTCHA solver. You MUST describe every single cell before answering. IMPORTANT: The answer MUST contain EXACTLY 5 cells — no more, no less. Always end with FINAL ANSWER: on its own line.' },
+                            { role: 'system', content: 'You are a CAPTCHA solver. Be brief. ALWAYS end with FINAL ANSWER: line containing exactly 5 numbers.' },
                             { role: 'user', content: [
                                 { type: 'image_url', image_url: { url: cropUrl } },
-                                { type: 'text', text: `Solve this CAPTCHA. The image shows a 3x3 grid (9 images).
+                                { type: 'text', text: `CAPTCHA: 3x3 grid, 9 images. You MUST select EXACTLY 5.
 
-STEP 1 - Read the task:
-Find the underlined word in "Choose all the ___". Write: Task: [word]
+Task: Find the underlined word after "Choose all the ___".
 
-STEP 2 - Describe EVERY cell (you must fill in all 9):
-Cell 1: [describe what you see]
-Cell 2: [describe what you see]
-Cell 3: [describe what you see]
-Cell 4: [describe what you see]
-Cell 5: [describe what you see]
-Cell 6: [describe what you see]
-Cell 7: [describe what you see]
-Cell 8: [describe what you see]
-Cell 9: [describe what you see]
+Briefly describe each cell (1 word each):
+1: _ 2: _ 3: _ 4: _ 5: _ 6: _ 7: _ 8: _ 9: _
 
-STEP 3 - Select EXACTLY 5 cells:
-You MUST pick EXACTLY 5 cells that best match the Task word. Even if you're unsure about some, you must select 5 total. Pick the 5 most likely matches. Never pick fewer than 5, never more than 5.
+Select the 5 cells that BEST match the task word. You MUST pick exactly 5.
 
-FINAL ANSWER: [exactly 5 numbers, e.g. 1,3,5,7,9]` }
+FINAL ANSWER: [5 numbers, comma separated]` }
                             ]}
                         ]
                     })
