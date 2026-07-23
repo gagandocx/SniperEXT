@@ -472,38 +472,44 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
         // Clear any stale redirect flag from previous sessions
         chrome.storage.local.remove('_pendingJobRedirect');
 
-        // Step 1: Wait 4s then refresh Gmail once
-        toast('📬 <b style="color:#00d4ff;">Waiting for verification email...</b>', 6000);
-        await sleep(4000);
+        // Step 1: Refresh Gmail immediately (no fixed wait)
+        toast('📬 <b style="color:#00d4ff;">Checking Gmail for verification code...</b>', 6000);
         console.log('[auth.js] Refreshing Gmail tab...');
         const _rfResult = await new Promise(resolve => {
             chrome.runtime.sendMessage({ action: 'refreshGmailTab' }, r => resolve(r || {}));
         });
         if (_rfResult && _rfResult.opened) {
-            console.log('[auth.js] Gmail tab auto-opened — waiting 7s for load');
-            toast('📬 <b style="color:#ffcc00;">Gmail opened — loading your inbox...</b>', 8000);
-            await sleep(7000);
+            console.log('[auth.js] Gmail tab auto-opened — waiting 4s for initial load');
+            toast('📬 <b style="color:#ffcc00;">Gmail opened — loading...</b>', 5000);
+            await sleep(4000);
         } else {
-            await sleep(6000);
+            // Gmail already open — just wait 2s for reload to complete
+            await sleep(2000);
         }
-        console.log('[auth.js] Gmail ready — polling for OTP...');
+        console.log('[auth.js] Gmail refreshed — starting real-time OTP scan...');
 
-        // Step 2: Poll for OTP
+        // Step 2: Real-time aggressive polling — check every 1.5s until found
+        // Much faster than old approach (was 4s between each check)
         let otp = null;
-        for (let i = 0; i < 10 && !otp; i++) {
+        const _maxPolls = 40;    // 40 × 1.5s = 60 seconds max
+        const _pollInterval = 1500; // Check every 1.5 seconds
+        for (let i = 0; i < _maxPolls && !otp; i++) {
             otp = await fetchOTPFromGmail();
             // Skip if this is the same code we already tried (old/expired)
             if (otp && otp === _lastUsedOtp) {
                 console.log('[auth.js] OTP poll', i+1, '→ SKIPPED (same as last used:', otp, ')');
-                otp = null; // treat as not found, keep polling for new one
-            } else {
-                console.log('[auth.js] OTP poll', i+1, '→', otp || 'null');
+                otp = null;
+            } else if (otp) {
+                console.log('[auth.js] ✅ OTP poll', i+1, '→ FOUND:', otp);
             }
-            if (!otp) { toast('📬 Checking Gmail ' + (i+1) + '/10...', 3200); await sleep(4000); }
+            if (!otp) {
+                if (i % 5 === 0) toast('📬 Scanning Gmail... ' + (i+1) + '/' + _maxPolls, 2000);
+                await sleep(_pollInterval);
+            }
         }
 
         if (!otp) {
-            console.error('[auth.js] OTP not found after 8 attempts');
+            console.error('[auth.js] OTP not found after', _maxPolls, 'attempts (60s)');
             // Show prominent popup instruction to user
             if (typeof Swal !== 'undefined') {
                 Swal['fire']({
