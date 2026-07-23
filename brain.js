@@ -675,6 +675,11 @@
                 var els2 = document.querySelectorAll('button, a');
                 for (var w2 = 0; w2 < els2.length; w2++) { if (/search all jobs/i.test(els2[w2].textContent)) { hasS = true; break; } }
                 if (isW || hasS) return 'WELCOME_BACK';
+                // Check if actual login form exists — if not, it's the homepage in disguise
+                var hasLoginForm = !!document.querySelector('input[data-test-id="input-test-id-login"]');
+                var hasPinForm = !!document.querySelector('input[data-test-id="input-test-id-pin"]');
+                var hasHomepageContent = bodyText.includes('Ready to earn') || bodyText.includes('Find jobs in Canada') || bodyText.includes('Hourly opportunities');
+                if (!hasLoginForm && !hasPinForm && hasHomepageContent) return 'HOMEPAGE';
                 return 'LOGIN_PAGE';
             }
             // Homepage (not logged in) — detect by "Find jobs" button or no app# in URL
