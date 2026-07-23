@@ -68,6 +68,14 @@
         // Skip if Swal popup is open
         if (document.querySelector('.swal2-container.swal2-shown')) return null;
 
+        // ── "Let's confirm you are human" — BEGIN button page (before CAPTCHA grid)
+        if (text.includes('confirm you are human') || text.includes('Let\u2019s confirm you are human')) {
+            // Check if "Begin" button exists — means we're on the pre-CAPTCHA page
+            const beginBtn = [...document.querySelectorAll('button, input[type="submit"], a')]
+                .find(b => /begin/i.test(b.textContent || b.value || ''));
+            if (beginBtn) return 'captcha-begin';
+        }
+
         // ── CAPTCHA: detect by visible square image grid (works even in shadow DOM / widgets)
         const captchaImgs = [...document.querySelectorAll('img')].filter(img => {
             const r = img.getBoundingClientRect();
@@ -76,7 +84,7 @@
                    r.top > 30 && img.naturalWidth > 0 && img.src.startsWith('http');
         });
         if (captchaImgs.length >= 6) return 'captcha';
-        if (text.includes("confirm you are human")) return 'captcha';
+        if (text.includes("Choose all") || text.includes("choose all")) return 'captcha';
 
         // ── OTP entry page
         if (text.includes('verification code has been sent') || title.includes('Verify code')) return 'otp';
@@ -104,6 +112,24 @@
         if (sendBtn) {
             toast('📧 <b style="color:#00d4ff;">Sending verification code to your email...</b>');
             simulateClick(sendBtn);
+        }
+    }
+
+    // ── "Let's confirm you are human" — Click BEGIN to show the CAPTCHA grid ──
+    async function handleCaptchaBegin() {
+        console.log('[auth.js] "Let\'s confirm you are human" page — clicking Begin');
+        await sleep(500);
+        const beginBtn = [...document.querySelectorAll('button, input[type="submit"], a')]
+            .find(b => /begin/i.test(b.textContent || b.value || ''));
+        if (beginBtn) {
+            simulateClick(beginBtn);
+            toast('🤖 <b style="color:#00d4ff;">Starting human verification...</b>', 3000);
+            console.log('[auth.js] Begin clicked — waiting for CAPTCHA grid to appear');
+            // Wait for CAPTCHA grid to load after clicking Begin
+            await sleep(3000);
+            // captchaWatcher will pick up the grid once it appears
+        } else {
+            console.warn('[auth.js] Begin button not found');
         }
     }
 
@@ -158,24 +184,45 @@
         await sleep(200);
         console.log('[auth.js] handleCaptcha start', new Date().toLocaleTimeString());
 
-        // ── A: Find modal ──────────────────────────────────────────────────────
+        // ── A: Find CAPTCHA area ───────────────────────────────────────────────
+        // Two modes: 1) Modal (login flow), 2) Full-page (human verification)
         const tryList = ['#captchaModal','.captcha-modal','[data-test-id="captchaModal"]',
                          '#captchaModalOverlay > *:first-child','.captcha-overlay > *:first-child'];
         let modal = null;
+        let isFullPage = false; // true = standalone "Let's confirm you are human" page
         for (const s of tryList) { const el = document.querySelector(s); if (el) { modal = el; break; } }
-        if (!modal) { console.warn('[auth.js] modal not found'); return; }
-        try { modal.scrollIntoView({ block: 'start', behavior: 'instant' }); } catch(_) {}
-        await sleep(300);
-        const _mr0 = modal.getBoundingClientRect();
-        if (_mr0.top < 60) { window.scrollBy(0, _mr0.top - 60); await sleep(200); }
-        const mr = modal.getBoundingClientRect();
+
+        if (!modal) {
+            // Check if this is the full-page CAPTCHA ("Choose all the hats")
+            const bodyText = document.body.innerText || '';
+            if (bodyText.includes('Choose all') || bodyText.includes('confirm you are human')) {
+                // Use the entire visible page as the "modal"
+                modal = document.body;
+                isFullPage = true;
+                console.log('[auth.js] Full-page CAPTCHA detected');
+            } else {
+                console.warn('[auth.js] No CAPTCHA modal or page found');
+                return;
+            }
+        }
+
+        if (!isFullPage) {
+            try { modal.scrollIntoView({ block: 'start', behavior: 'instant' }); } catch(_) {}
+            await sleep(300);
+            const _mr0 = modal.getBoundingClientRect();
+            if (_mr0.top < 60) { window.scrollBy(0, _mr0.top - 60); await sleep(200); }
+        }
+
+        const mr = isFullPage
+            ? { top: 0, left: 0, width: window.innerWidth, height: window.innerHeight }
+            : modal.getBoundingClientRect();
         const modalRect = {
             top:    Math.max(0, Math.round(mr.top)),
             left:   Math.round(mr.left),
-            width:  mr.width > 700 ? Math.round(window.innerWidth * 0.24) : Math.round(mr.width),
-            height: mr.width > 700 ? Math.round(window.innerHeight * 0.82) : Math.round(mr.height)
+            width:  isFullPage ? Math.round(window.innerWidth) : (mr.width > 700 ? Math.round(window.innerWidth * 0.24) : Math.round(mr.width)),
+            height: isFullPage ? Math.round(window.innerHeight) : (mr.width > 700 ? Math.round(window.innerHeight * 0.82) : Math.round(mr.height))
         };
-        console.log('[auth.js] modal rect:', JSON.stringify(modalRect));
+        console.log('[auth.js] CAPTCHA rect:', JSON.stringify(modalRect), 'fullPage:', isFullPage);
 
         // ── B: Groq key ────────────────────────────────────────────────────────
         let groqKey = '';
@@ -291,37 +338,108 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
         toast('🤖 <b style="color:#4CAF50;">Clicking: ' + positions.join(',') + '</b>', 5000);
 
         // ── F: Build cell click coordinates ───────────────────────────────────
-        const gT = modalRect.top  + modalRect.height * 0.17;
-        const gL = modalRect.left + modalRect.width  * 0.03;
-        const cW = (modalRect.width  * 0.94) / 3;
-        const cH = (modalRect.height * 0.62) / 3;
-        const cellClicks = positions.map(pos => {
-            const row = Math.floor((pos-1)/3), col = (pos-1)%3;
-            return { x: gL + col*cW + cW/2, y: gT + row*cH + cH/2 };
-        });
-
-        // ── G: ONE debugger session — click cells then Confirm via shadow DOM ──
-        console.log('[auth.js] sending clickCellsAndConfirm...');
-        const result = await new Promise(resolve => {
-            chrome.runtime.sendMessage({ action: 'clickCellsAndConfirm', cellClicks }, r => {
-                if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-                else resolve(r || { error: 'no response' });
+        let cellClicks;
+        if (isFullPage) {
+            // Full-page CAPTCHA: find the actual image grid position
+            const gridImgs = [...document.querySelectorAll('img')].filter(img => {
+                const r = img.getBoundingClientRect();
+                return r.width >= 70 && r.width <= 250 && r.height >= 70 && r.height <= 250 && r.top > 30;
             });
-        });
-        console.log('[auth.js] clickCellsAndConfirm result:', JSON.stringify(result));
+            if (gridImgs.length >= 6) {
+                // Calculate grid bounds from actual images
+                let minX = 9999, minY = 9999, maxX = 0, maxY = 0;
+                gridImgs.forEach(img => {
+                    const r = img.getBoundingClientRect();
+                    minX = Math.min(minX, r.left);
+                    minY = Math.min(minY, r.top);
+                    maxX = Math.max(maxX, r.right);
+                    maxY = Math.max(maxY, r.bottom);
+                });
+                const gridW = maxX - minX, gridH = maxY - minY;
+                const cW = gridW / 3, cH = gridH / 3;
+                cellClicks = positions.map(pos => {
+                    const row = Math.floor((pos-1)/3), col = (pos-1)%3;
+                    return { x: minX + col*cW + cW/2, y: minY + row*cH + cH/2 };
+                });
+            } else {
+                // Fallback: estimate from page center
+                const gT = modalRect.height * 0.15;
+                const gL = modalRect.width * 0.35;
+                const cW = (modalRect.width * 0.30) / 3;
+                const cH = (modalRect.height * 0.55) / 3;
+                cellClicks = positions.map(pos => {
+                    const row = Math.floor((pos-1)/3), col = (pos-1)%3;
+                    return { x: gL + col*cW + cW/2, y: gT + row*cH + cH/2 };
+                });
+            }
+        } else {
+            // Modal CAPTCHA: original calculation
+            const gT = modalRect.top  + modalRect.height * 0.17;
+            const gL = modalRect.left + modalRect.width  * 0.03;
+            const cW = (modalRect.width  * 0.94) / 3;
+            const cH = (modalRect.height * 0.62) / 3;
+            cellClicks = positions.map(pos => {
+                const row = Math.floor((pos-1)/3), col = (pos-1)%3;
+                return { x: gL + col*cW + cW/2, y: gT + row*cH + cH/2 };
+            });
+        }
 
-        if (result.error) { toast('❌ ' + result.error, 5000); return; }
-        toast('✅ <b style="color:#4CAF50;">Submitted: ' + positions.join(',') + ' | ' + (result.confirmStatus || '?') + '</b>', 5000);
+        // ── G: Click cells then Confirm ────────────────────────────────────────
+        if (isFullPage) {
+            // Full-page mode: use debugger for cells, then click Confirm button directly
+            console.log('[auth.js] Full-page CAPTCHA — clicking cells via debugger...');
+            const clickResult = await new Promise(resolve => {
+                chrome.runtime.sendMessage({ action: 'debuggerClick', clicks: cellClicks }, r => {
+                    if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+                    else resolve(r || { error: 'no response' });
+                });
+            });
+            console.log('[auth.js] Cell clicks result:', JSON.stringify(clickResult));
+            if (clickResult.error) { toast('❌ ' + clickResult.error, 5000); return; }
+
+            // Wait for selections to register, then click Confirm
+            await sleep(800);
+            const confirmBtn = [...document.querySelectorAll('button, input[type="submit"]')]
+                .find(b => /confirm/i.test(b.textContent || b.value || ''));
+            if (confirmBtn) {
+                simulateClick(confirmBtn);
+                console.log('[auth.js] Confirm button clicked (full-page)');
+                toast('✅ <b style="color:#4CAF50;">Submitted: ' + positions.join(',') + '</b>', 5000);
+            } else {
+                // Fallback: try debugger click at Confirm button location
+                console.warn('[auth.js] Confirm button not found — trying debugger click');
+                const confirmClicks = [{ x: Math.round(window.innerWidth * 0.7), y: Math.round(window.innerHeight * 0.85) }];
+                chrome.runtime.sendMessage({ action: 'debuggerClick', clicks: confirmClicks });
+            }
+        } else {
+            // Modal mode: original approach (shadow DOM pierce)
+            console.log('[auth.js] sending clickCellsAndConfirm...');
+            const result = await new Promise(resolve => {
+                chrome.runtime.sendMessage({ action: 'clickCellsAndConfirm', cellClicks }, r => {
+                    if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+                    else resolve(r || { error: 'no response' });
+                });
+            });
+            console.log('[auth.js] clickCellsAndConfirm result:', JSON.stringify(result));
+            if (result.error) { toast('❌ ' + result.error, 5000); return; }
+            toast('✅ <b style="color:#4CAF50;">Submitted: ' + positions.join(',') + ' | ' + (result.confirmStatus || '?') + '</b>', 5000);
+        }
 
         // ── H: Wait for CAPTCHA outcome (up to 6s) ────────────────────────────
-        // Only retry after "Incorrect" is confirmed AND new images are loaded
         console.log('[auth.js] waiting for outcome...');
         let outcome = 'pending';
         for (let w = 0; w < 12; w++) {
             await sleep(500);
             const txt = document.body.innerText;
-            if (!document.querySelector('#captchaModal, .captcha-modal, awswaf-captcha')) {
-                outcome = 'success'; break;
+            // Full-page: success = page navigates away (no more "Choose all" text)
+            if (isFullPage) {
+                if (!txt.includes('Choose all') && !txt.includes('confirm you are human')) {
+                    outcome = 'success'; break;
+                }
+            } else {
+                if (!document.querySelector('#captchaModal, .captcha-modal, awswaf-captcha')) {
+                    outcome = 'success'; break;
+                }
             }
             if (txt.includes('Incorrect') || txt.includes('incorrect') || txt.includes('try again')) {
                 outcome = 'incorrect'; break;
@@ -534,8 +652,9 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
         try {
             console.log('[auth.js] step:', step);
             await sleep(400);
-            if      (step === 'verify-type') await handleVerifyType();
-            else if (step === 'otp')         await handleOTP();
+            if      (step === 'verify-type')   await handleVerifyType();
+            else if (step === 'captcha-begin') await handleCaptchaBegin();
+            else if (step === 'otp')           await handleOTP();
         } finally {
             _handling = false; // reset immediately — no extra wait
         }
