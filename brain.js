@@ -1,462 +1,185 @@
 /**
- * brain.js — Centralized Watchdog / State Machine Monitor
- * v8.9.5.4 — ShiftSniper "Brain"
+ * brain.js — ShiftSniper Brain v2.0
+ * v8.9.6.0 — AI-Powered Centralized Watchdog
  *
- * Runs on ALL hiring.amazon.* and auth.hiring.amazon.* pages.
- * Monitors the entire extension lifecycle and self-heals stuck states.
- *
- * STATE MACHINE:
- *   IDLE                → Extension loaded but not active
- *   LOGIN_PAGE          → On auth login page, waiting for form to appear
- *   LOGIN_FILLING       → Auto-filling email/PIN
- *   AUTH_VERIFY_TYPE    → "Where to send code?" page
- *   AUTH_CAPTCHA        → CAPTCHA puzzle showing
- *   AUTH_OTP            → Waiting for / filling OTP code
- *   REDIRECT            → Navigating between pages (post-login, etc.)
- *   JOBSEARCH_SCANNING  → On jobSearch, scan loop active
- *   JOB_APPLYING        → Found a job, auto-apply in progress
- *   RELOGIN_BG          → Background tab re-login (this tab is the bg tab)
- *
- * Each state has a MAX DURATION. If exceeded → corrective action.
+ * 10 ADVANCED FEATURES:
+ *  1. Activity Log (last 50 actions)
+ *  2. Smart Timing (learns average step durations)
+ *  3. Consecutive Failure Detection (skips broken fixes)
+ *  4. Session Health Score (0-100)
+ *  5. Smarter AI Analysis (full screen analysis + recovery plan)
+ *  6. Multi-Tab Awareness (monitors re-login tab)
+ *  7. Auto-Expand Search (increases radius if 0 shifts for 30 min)
+ *  8. Notification Dashboard (toasts + health in scan ring)
+ *  9. Recovery Memory (remembers what worked, persists in storage)
+ * 10. Proactive Session Refresh (refreshes before expiry)
  */
 (function() {
     'use strict';
 
-    // ── Config ───────────────────────────────────────────────────────────────
-    var POLL_INTERVAL = 4000;  // Check state every 4 seconds
     var LOG_PREFIX = '[brain]';
+    var POLL_INTERVAL = 4000;
 
-    // Max time allowed in each state before intervention (milliseconds)
-    var STATE_TIMEOUTS = {
-        'LOGIN_PAGE':       20000,   // 20s — page should load and fill quickly
-        'LOGIN_FILLING':    15000,   // 15s — filling email/PIN shouldn't take long
-        'WELCOME_BACK':     5000,    // 5s — just need to click "Search all jobs"
-        'AUTH_VERIFY_TYPE': 15000,   // 15s — should auto-select email and click Send
-        'AUTH_CAPTCHA':     45000,   // 45s — Groq call + click + verify takes time
-        'AUTH_OTP':         90000,   // 90s — waiting for email can be slow
-        'REDIRECT':         15000,   // 15s — page transitions
-        'JOBSEARCH_SCANNING': null,  // No timeout — this is the target state
-        'JOB_APPLYING':     30000,   // 30s — apply flow
-        'RELOGIN_BG':       180000,  // 3 min — full re-login in background
-        'IDLE':             null     // No timeout — user hasn't activated
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 1: ACTIVITY LOG — Last 50 actions with timestamps
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _activityLog = [];
+    var _MAX_LOG = 50;
+
+    function logAction(type, detail, success) {
+        var entry = {
+            time: new Date().toLocaleTimeString(),
+            ts: Date.now(),
+            type: type,       // 'fix', 'ai', 'state', 'health', 'refresh'
+            detail: detail,
+            success: success !== undefined ? success : null,
+            state: _currentState
+        };
+        _activityLog.push(entry);
+        if (_activityLog.length > _MAX_LOG) _activityLog.shift();
+        console.log(LOG_PREFIX, (success === false ? '❌' : success === true ? '✅' : '📝'),
+                    type + ':', detail);
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 2: SMART TIMING — Learn average step durations
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _timings = {}; // { state: { avg: ms, count: n, last: ms } }
+    var _timingsLoaded = false;
+
+    function recordTiming(state, durationMs) {
+        if (!_timings[state]) _timings[state] = { avg: durationMs, count: 1, last: durationMs };
+        else {
+            var t = _timings[state];
+            t.count++;
+            t.avg = Math.round((t.avg * (t.count - 1) + durationMs) / t.count);
+            t.last = durationMs;
+        }
+        // Persist every 5 recordings
+        if ((_timings[state].count % 5) === 0) {
+            chrome.storage.local.set({ '__brain_timings': _timings });
+        }
+    }
+
+    function getSmartTimeout(state) {
+        // If we have learned timing, use 2.5x the average as timeout
+        if (_timings[state] && _timings[state].count >= 3) {
+            return Math.max(_timings[state].avg * 2.5, 8000); // at least 8s
+        }
+        return STATE_TIMEOUTS[state]; // fallback to defaults
+    }
+
+    // Load saved timings
+    chrome.storage.local.get(['__brain_timings'], function(d) {
+        if (d['__brain_timings']) { _timings = d['__brain_timings']; _timingsLoaded = true; }
+    });
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 3: CONSECUTIVE FAILURE DETECTION — Skip broken fixes
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _failureHistory = {}; // { 'STATE:fixType': { fails: n, lastFail: ts } }
+
+    function recordFixResult(state, fixType, success) {
+        var key = state + ':' + fixType;
+        if (!_failureHistory[key]) _failureHistory[key] = { fails: 0, successes: 0, lastFail: 0 };
+        if (success) {
+            _failureHistory[key].successes++;
+            _failureHistory[key].fails = Math.max(0, _failureHistory[key].fails - 1);
+        } else {
+            _failureHistory[key].fails++;
+            _failureHistory[key].lastFail = Date.now();
+        }
+    }
+
+    function shouldSkipFix(state, fixType) {
+        var key = state + ':' + fixType;
+        var h = _failureHistory[key];
+        if (!h) return false;
+        // Skip if failed 3+ times in a row and last failure was < 5 min ago
+        return h.fails >= 3 && (Date.now() - h.lastFail) < 300000;
+    }
+
+    function getAlternativeFix(state) {
+        // Return an alternative fix when the primary one keeps failing
+        switch (state) {
+            case 'LOGIN_PAGE': return 'reload';      // if activate fails → reload
+            case 'LOGIN_FILLING': return 'reload';   // if click Continue fails → reload
+            case 'REDIRECT': return 'navigate_job';  // if redirect logic fails → direct nav
+            case 'AUTH_OTP': return 'reload';         // if Gmail refresh fails → reload auth
+            default: return 'reload';
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 4: SESSION HEALTH SCORE (0-100)
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _health = {
+        score: 100,
+        lastIntercept: 0,
+        interceptsPerMin: 0,
+        errorsLast5Min: 0,
+        _interceptTimes: [],   // timestamps of last 20 intercepts
+        _errorTimes: []        // timestamps of errors
     };
 
-    // ── State tracking ───────────────────────────────────────────────────────
-    var _currentState = 'IDLE';
-    var _stateEnteredAt = Date.now();
-    var _lastAction = null;
-    var _actionCount = 0;        // How many corrective actions taken in this state
-    var _maxActionsPerState = 3; // Don't hammer — max 3 fixes per state then escalate to AI
-    var _aiEscalated = false;    // Whether AI has already been called for this state
+    function updateHealth() {
+        var now = Date.now();
+        var score = 100;
 
-    function setState(newState) {
-        if (newState === _currentState) return;
-        console.log(LOG_PREFIX, _currentState, '→', newState);
-        _currentState = newState;
-        _stateEnteredAt = Date.now();
-        _actionCount = 0;
-        _aiEscalated = false;
-        // Persist state for cross-tab visibility (background tab can read it)
-        chrome.storage.local.set({ '__brain_state': newState, '__brain_ts': _stateEnteredAt });
-    }
-
-    function stateAge() {
-        return Date.now() - _stateEnteredAt;
-    }
-
-    // ── State Detection — figures out WHERE we are right now ─────────────────
-    function detectState() {
-        var url = window.location.href;
-        var bodyText = (document.body && document.body.innerText) || '';
-
-        // ── Check if this is a re-login background tab
-        // (handled by checking __reloginTabId match — but we can't easily get our tab ID here,
-        //  so we check if the page is NOT focused/visible as a proxy)
-        // Actually, let's just detect by the state of things:
-
-        // ── Auth pages ──────────────────────────────────────────────────────
-        if (url.includes('auth.hiring.amazon')) {
-            // CAPTCHA visible?
-            var captchaImgs = document.querySelectorAll('img');
-            var captchaCount = 0;
-            for (var i = 0; i < captchaImgs.length; i++) {
-                var r = captchaImgs[i].getBoundingClientRect();
-                if (r.width >= 60 && r.width <= 350 && r.height >= 60 && r.height <= 350 &&
-                    r.bottom > 50 && captchaImgs[i].src && captchaImgs[i].src.startsWith('http')) {
-                    captchaCount++;
-                }
-            }
-            var hasAwsWaf = !!document.querySelector('awswaf-captcha, [id*="awswaf"], [class*="awswaf"]');
-            if (captchaCount >= 6 || hasAwsWaf || bodyText.includes('confirm you are human')) {
-                return 'AUTH_CAPTCHA';
-            }
-
-            // OTP page?
-            if (bodyText.includes('verification code has been sent') ||
-                document.querySelector('input[data-test-id="input-test-id-code"]') ||
-                document.querySelector('input[maxlength="6"]')) {
-                return 'AUTH_OTP';
-            }
-
-            // Verify type page?
-            if (bodyText.includes('Where should we send your verification code')) {
-                return 'AUTH_VERIFY_TYPE';
-            }
-
-            // Login page with form?
-            if (url.includes('#/login') || url.includes('/login')) {
-                // v8.9.5.5: "Welcome back" page — already logged in, just needs "Search all jobs" click
-                var bodyText2 = (document.body && document.body.innerText) || '';
-                var isWelcomeBack = bodyText2.includes('Welcome back') || bodyText2.includes('continue where you left');
-                var hasSearchBtn = false;
-                var allEls = document.querySelectorAll('button, a');
-                for (var wb = 0; wb < allEls.length; wb++) {
-                    if (/search all jobs/i.test(allEls[wb].textContent)) { hasSearchBtn = true; break; }
-                }
-                if (isWelcomeBack || (hasSearchBtn && !document.querySelector('input[data-test-id="input-test-id-login"]'))) {
-                    return 'WELCOME_BACK';
-                }
-
-                var emailInput = document.querySelector('input[data-test-id="input-test-id-login"]');
-                var pinInput = document.querySelector('input[data-test-id="input-test-id-pin"]');
-                if (pinInput) return 'LOGIN_FILLING'; // On PIN step
-                if (emailInput) {
-                    if (emailInput.value) return 'LOGIN_FILLING'; // Already typed
-                    return 'LOGIN_PAGE'; // Empty form waiting
-                }
-                return 'LOGIN_PAGE';
-            }
-
-            // Some other auth page — probably transitioning
-            return 'REDIRECT';
-        }
-
-        // ── Main hiring pages ───────────────────────────────────────────────
-        if (url.includes('hiring.amazon')) {
-            // On jobSearch with scan ring visible = scanning
-            if (url.includes('app#/jobSearch')) {
-                var ring = document.getElementById('ss-ring');
-                if (ring && ring.style.display !== 'none') {
-                    return 'JOBSEARCH_SCANNING';
-                }
-                // On jobSearch but ring not showing — might still be activating
-                return 'JOBSEARCH_SCANNING'; // Close enough — the real check is the ring
-            }
-
-            // On job detail page = applying
-            if (url.includes('app#/jobDetail') || url.includes('/application/')) {
-                return 'JOB_APPLYING';
-            }
-
-            // On contactInformation = redirect/setup step
-            if (url.includes('contactInformation')) {
-                return 'REDIRECT';
-            }
-
-            // On login page (non-auth domain)
-            if (url.includes('#/login')) {
-                return 'LOGIN_PAGE';
-            }
-
-            // Homepage or other
-            return 'REDIRECT';
-        }
-
-        return 'IDLE';
-    }
-
-    // ── Corrective Actions — what to do when stuck ──────────────────────────
-    function fixStuckState(state) {
-        _actionCount++;
-        _lastAction = Date.now();
-        var age = Math.round(stateAge() / 1000);
-
-        console.log(LOG_PREFIX, '⚠️ STUCK in', state, 'for', age + 's — action #' + _actionCount);
-
-        // If we've tried too many times in this state, escalate to AI
-        if (_actionCount > _maxActionsPerState) {
-            if (!_aiEscalated) {
-                console.log(LOG_PREFIX, '🤖 Max actions reached — escalating to AI');
-                _aiEscalated = true;
-                _askAI(state);
-            } else {
-                // AI already tried — last resort: reload
-                console.log(LOG_PREFIX, '🔄 AI already tried — last resort reload');
-                window.location.reload();
-            }
-            return;
-        }
-
-        switch (state) {
-            case 'WELCOME_BACK':
-                // Post-login "Welcome back" page — click "Search all jobs"
-                console.log(LOG_PREFIX, '🔧 Welcome back page — clicking "Search all jobs"');
-                var allEls = document.querySelectorAll('button, a');
-                var clicked = false;
-                for (var wb = 0; wb < allEls.length; wb++) {
-                    if (/search all jobs/i.test(allEls[wb].textContent)) {
-                        allEls[wb].click();
-                        clicked = true;
-                        console.log(LOG_PREFIX, '✅ Clicked "Search all jobs"');
-                        break;
-                    }
-                }
-                if (!clicked) {
-                    // Fallback: navigate directly
-                    console.log(LOG_PREFIX, '🔧 Button not found — navigating directly to jobSearch');
-                    window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-                }
-                break;
-
-            case 'LOGIN_PAGE':
-                // Login form not being filled — trigger C() via activate message
-                console.log(LOG_PREFIX, '🔧 Triggering login fill via activate');
-                chrome.runtime.sendMessage({ action: 'activate', status: true });
-                break;
-
-            case 'LOGIN_FILLING':
-                // Stuck on filling — maybe PIN didn't submit. Try clicking Continue.
-                console.log(LOG_PREFIX, '🔧 Clicking Continue button');
-                var continueBtn = document.querySelector('button[data-test-id="button-continue"]');
-                if (continueBtn) {
-                    continueBtn.click();
-                } else {
-                    // Maybe the "Continue" div-button
-                    var divBtns = document.querySelectorAll('div[data-test-component="StencilReactRow"]');
-                    for (var i = 0; i < divBtns.length; i++) {
-                        if (divBtns[i].textContent.trim() === 'Continue') {
-                            divBtns[i].click();
-                            break;
-                        }
-                    }
-                }
-                break;
-
-            case 'AUTH_VERIFY_TYPE':
-                // Stuck on "Where to send code" — try clicking email radio + send
-                console.log(LOG_PREFIX, '🔧 Selecting Email and clicking Send');
-                var radios = document.querySelectorAll('input[type="radio"], [role="radio"]');
-                for (var j = 0; j < radios.length; j++) {
-                    var label = radios[j].closest('label') || radios[j].parentElement;
-                    if (label && label.textContent.toLowerCase().includes('email')) {
-                        radios[j].click();
-                        break;
-                    }
-                }
-                setTimeout(function() {
-                    var btns = document.querySelectorAll('button');
-                    for (var k = 0; k < btns.length; k++) {
-                        if (btns[k].textContent.includes('Send verification code')) {
-                            btns[k].click();
-                            break;
-                        }
-                    }
-                }, 500);
-                break;
-
-            case 'AUTH_CAPTCHA':
-                // CAPTCHA stuck — Groq might have failed. If no Groq key, nothing we can do.
-                // Otherwise, the captchaWatcher in auth.js should retry.
-                // Our fix: check if captchaWatcher might be dead, restart detection
-                console.log(LOG_PREFIX, '🔧 CAPTCHA stuck — will reload if no progress in 15s');
-                setTimeout(function() {
-                    if (detectState() === 'AUTH_CAPTCHA' && stateAge() > 60000) {
-                        console.log(LOG_PREFIX, '🔄 CAPTCHA still stuck after 60s — reloading');
-                        window.location.reload();
-                    }
-                }, 15000);
-                break;
-
-            case 'AUTH_OTP':
-                // OTP stuck — Gmail might not have the email yet.
-                // Trigger another Gmail refresh
-                console.log(LOG_PREFIX, '🔧 OTP stuck — refreshing Gmail tab');
-                chrome.runtime.sendMessage({ action: 'refreshGmailTab' });
-                break;
-
-            case 'REDIRECT':
-                // Stuck in transition — figure out where to go
-                console.log(LOG_PREFIX, '🔧 Stuck in redirect — navigating to jobSearch');
-                var url = window.location.href;
-                if (url.includes('contactInformation')) {
-                    // Try clicking Save then redirect
-                    var saveBtn = document.querySelector('button');
-                    var found = false;
-                    var allBtns = document.querySelectorAll('button');
-                    for (var m = 0; m < allBtns.length; m++) {
-                        if (/^save$/i.test(allBtns[m].textContent.trim())) {
-                            allBtns[m].click();
-                            found = true;
-                            break;
-                        }
-                    }
-                    setTimeout(function() {
-                        window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-                    }, found ? 1500 : 500);
-                } else if (url.includes('hiring.amazon') && !url.includes('auth.')) {
-                    window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-                } else {
-                    // On auth domain but not on a recognized step — reload
-                    window.location.reload();
-                }
-                break;
-
-            case 'JOB_APPLYING':
-                // Apply flow stuck — might be on a page that needs a click
-                console.log(LOG_PREFIX, '🔧 Apply stuck — checking for buttons');
-                var applyBtn = document.querySelector('button[data-test-id="jobDetailApplyButtonDesktop"]');
-                var schedBtn = document.querySelector('button[data-test-id="ScheduleCardSelectScheduleLink"]');
-                var selectBtn = document.querySelector('button[data-test-id="jobDetailSelectScheduleButton"]');
-                if (applyBtn) { applyBtn.click(); }
-                else if (schedBtn) { schedBtn.click(); }
-                else if (selectBtn) { selectBtn.click(); }
-                else {
-                    // Nothing clickable — go back to scanning
-                    console.log(LOG_PREFIX, '🔧 No apply buttons found — returning to jobSearch');
-                    window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-                }
-                break;
-
-            case 'JOBSEARCH_SCANNING':
-                // This shouldn't timeout (null), but if scan ring is red/gone, restart
-                console.log(LOG_PREFIX, '🔧 Scan might be dead — sending activate');
-                chrome.runtime.sendMessage({ action: 'activate', status: true });
-                // Also click "All" tab in case it's on Recommended
-                setTimeout(function() {
-                    var btns = document.querySelectorAll('button');
-                    for (var n = 0; n < btns.length; n++) {
-                        if (btns[n].textContent.trim() === 'All') {
-                            btns[n].click();
-                            break;
-                        }
-                    }
-                }, 2000);
-                break;
-
-            default:
-                console.log(LOG_PREFIX, '🔧 Unknown state — reloading');
-                window.location.reload();
-        }
-    }
-
-    // ── Additional check: is scan loop healthy? ─────────────────────────────
-    function checkScanHealth() {
-        if (_currentState !== 'JOBSEARCH_SCANNING') return;
-
-        // ── Cooldown: don't take action more than once per 60 seconds ───────
-        if (_lastAction && (Date.now() - _lastAction < 60000)) return;
-
-        // ── Check for error messages on the page ────────────────────────────
-        var bodyText = (document.body && document.body.innerText) || '';
-        if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
-            console.log(LOG_PREFIX, '🔄 "Problem loading page" detected — session expired, triggering re-login');
-            _lastAction = Date.now();
-            // Don't reload (same page = same error). Re-login to get fresh session.
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-            // Wait 30s for re-login to complete, then reload THIS page
-            setTimeout(function() {
-                console.log(LOG_PREFIX, '🔄 Post re-login — reloading page to pick up fresh session');
-                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-            }, 30000);
-            return;
-        }
-
-        // ── Ensure "All" tab is selected (not stuck on "Recommended") ───────
-        var allTab = null, recTab = null;
-        var btns = document.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) {
-            var txt = btns[i].textContent.trim();
-            if (txt === 'All') allTab = btns[i];
-            if (txt === 'Recommended') recTab = btns[i];
-        }
-        if (recTab && allTab) {
-            var recSelected = recTab.getAttribute('aria-selected') === 'true' ||
-                              recTab.classList.contains('active') ||
-                              recTab.closest('[aria-selected="true"]');
-            if (recSelected) {
-                console.log(LOG_PREFIX, '🔧 "Recommended" is selected — switching to "All"');
-                allTab.click();
-            }
-        }
-
+        // Factor 1: Data freshness (0-40 points)
         var storeEl = document.getElementById('__ss_token_store');
-        if (!storeEl) return;
-
-        var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
-        var staleness = Date.now() - lastTs;
-
-        // If data stale for 90+ seconds — session expired, need re-login (not just reload)
-        if (lastTs > 0 && staleness > 90000) {
-            console.log(LOG_PREFIX, '🔄 Data stale for', Math.round(staleness/1000) + 's — session expired, re-logging in');
-            _lastAction = Date.now();
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-            // After re-login completes (30s), reload this tab to pick up fresh cookies
-            setTimeout(function() {
-                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-            }, 30000);
-            return;
+        if (storeEl) {
+            var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
+            _health.lastIntercept = lastTs;
+            var staleness = now - lastTs;
+            if (staleness < 5000) score -= 0;         // Fresh: no penalty
+            else if (staleness < 15000) score -= 10;  // Slightly stale
+            else if (staleness < 30000) score -= 20;  // Getting old
+            else if (staleness < 60000) score -= 30;  // Very stale
+            else score -= 40;                          // Dead
+        } else {
+            score -= 40; // No intercepts at all
         }
 
-        // If stale for 30-90s — try tab toggle first (might just be a hiccup)
-        if (lastTs > 0 && staleness > 30000) {
-            console.log(LOG_PREFIX, '⚠️ Data stale for', Math.round(staleness/1000) + 's — triggering tab toggle');
-            _lastAction = Date.now();
-            if (recTab && allTab) {
-                recTab.click();
-                setTimeout(function() { allTab.click(); }, 1000);
-            } else if (allTab) {
-                allTab.click();
-            }
-        }
+        // Factor 2: Intercept rate (0-30 points)
+        _health._interceptTimes = _health._interceptTimes.filter(function(t) { return now - t < 60000; });
+        _health.interceptsPerMin = _health._interceptTimes.length;
+        if (_health.interceptsPerMin >= 10) score -= 0;
+        else if (_health.interceptsPerMin >= 5) score -= 5;
+        else if (_health.interceptsPerMin >= 1) score -= 15;
+        else score -= 30;
 
-        // If no intercept has EVER happened after 15s on jobSearch, click All tab
-        if (lastTs === 0 && stateAge() > 15000) {
-            console.log(LOG_PREFIX, '⚠️ No intercepts ever — clicking All tab');
-            _lastAction = Date.now();
-            if (allTab) allTab.click();
-        }
+        // Factor 3: Recent errors (0-30 points)
+        _health._errorTimes = _health._errorTimes.filter(function(t) { return now - t < 300000; });
+        _health.errorsLast5Min = _health._errorTimes.length;
+        if (_health.errorsLast5Min === 0) score -= 0;
+        else if (_health.errorsLast5Min <= 2) score -= 10;
+        else if (_health.errorsLast5Min <= 5) score -= 20;
+        else score -= 30;
+
+        _health.score = Math.max(0, Math.min(100, score));
+        return _health.score;
     }
 
-    // ── Additional check: "Please sign-in again" popup ──────────────────────
-    function checkSignInPopup() {
-        // SweetAlert popup
-        var swalPopup = document.querySelector('.swal2-popup.swal2-show, .swal2-container.swal2-shown .swal2-popup');
-        if (swalPopup) {
-            var text = swalPopup.innerText || '';
-            if (/sign.?in again|session expired|please sign/i.test(text)) {
-                console.log(LOG_PREFIX, '⚠️ "Sign in again" popup — auto-dismissing');
-                var okBtn = swalPopup.querySelector('.swal2-confirm');
-                if (okBtn) {
-                    okBtn.click();
-                    setTimeout(function() {
-                        chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-                    }, 800);
-                }
-                return true;
-            }
-        }
-        return false;
+    function recordIntercept() {
+        _health._interceptTimes.push(Date.now());
     }
 
-    // ── Additional check: blank/white page ──────────────────────────────────
-    function checkBlankPage() {
-        var bodyLen = (document.body && document.body.innerText || '').trim().length;
-        // If page is basically empty after 10 seconds, reload
-        if (bodyLen < 20 && stateAge() > 10000 && _currentState !== 'IDLE') {
-            console.log(LOG_PREFIX, '⚠️ Blank page detected — reloading');
-            window.location.reload();
-            return true;
-        }
-        return false;
+    function recordError() {
+        _health._errorTimes.push(Date.now());
     }
 
-    // ── AI Escalation — when pre-programmed fixes fail ─────────────────────
-    // Takes a screenshot, sends to Groq AI with full context, gets instructions
-    // on what to click/type/navigate, then executes them.
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 5: SMARTER AI ANALYSIS
+    // ═══════════════════════════════════════════════════════════════════════════
     async function _askAI(stuckState) {
-        console.log(LOG_PREFIX, '🤖 AI escalation — taking screenshot...');
+        logAction('ai', 'Escalating to AI for state: ' + stuckState);
 
-        // Get Groq key
         var groqKey = '';
         try {
             var data = await new Promise(function(res) {
@@ -466,12 +189,11 @@
         } catch(e) {}
 
         if (!groqKey) {
-            console.log(LOG_PREFIX, '🤖 No Groq key — falling back to reload');
+            logAction('ai', 'No Groq key — falling back to reload', false);
             window.location.reload();
             return;
         }
 
-        // Take screenshot
         var ssRes = await new Promise(function(resolve) {
             chrome.runtime.sendMessage({ action: 'takeScreenshot' }, function(r) {
                 if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
@@ -480,233 +202,674 @@
         });
 
         if (ssRes.error || !ssRes.dataUrl) {
-            console.log(LOG_PREFIX, '🤖 Screenshot failed — reloading');
+            logAction('ai', 'Screenshot failed', false);
             window.location.reload();
             return;
         }
 
-        // Gather page context
         var pageContext = {
             url: window.location.href,
             title: document.title,
             stuckState: stuckState,
             stuckFor: Math.round(stateAge() / 1000) + 's',
+            healthScore: _health.score,
             actionsAttempted: _actionCount,
+            recentLog: _activityLog.slice(-5).map(function(e) { return e.type + ':' + e.detail; }),
             visibleButtons: [],
             visibleInputs: [],
-            bodySnippet: (document.body.innerText || '').slice(0, 500)
+            bodySnippet: (document.body.innerText || '').slice(0, 600)
         };
 
-        // Collect visible buttons
         var btns = document.querySelectorAll('button, [role="button"], a[href]');
         for (var i = 0; i < Math.min(btns.length, 15); i++) {
             var txt = (btns[i].textContent || '').trim().slice(0, 50);
             if (txt) pageContext.visibleButtons.push(txt);
         }
-
-        // Collect visible inputs
         var inputs = document.querySelectorAll('input, textarea, select');
         for (var j = 0; j < Math.min(inputs.length, 10); j++) {
             pageContext.visibleInputs.push({
                 type: inputs[j].type || 'text',
                 id: inputs[j].id || inputs[j].getAttribute('data-test-id') || '',
-                value: inputs[j].value ? '(has value)' : '(empty)',
-                placeholder: inputs[j].placeholder || ''
+                hasValue: !!inputs[j].value
             });
         }
 
-        console.log(LOG_PREFIX, '🤖 Asking Groq AI for help...', JSON.stringify(pageContext).slice(0, 200));
-
-        // Call Groq AI
         try {
             var ctl = new AbortController();
-            var timeout = setTimeout(function() { ctl.abort(); }, 20000);
-
+            var tmout = setTimeout(function() { ctl.abort(); }, 20000);
             var gResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                signal: ctl.signal,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + groqKey
-                },
+                signal: ctl.signal, method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + groqKey },
                 body: JSON.stringify({
-                    model: 'qwen/qwen3.6-27b',
-                    max_tokens: 400,
-                    temperature: 0.1,
-                    messages: [
-                        {
-                            role: 'system',
-                            content: 'You are a browser automation assistant for an Amazon warehouse job application extension called ShiftSniper. The extension is STUCK and needs your help to proceed. Your ULTIMATE GOAL is to get to https://hiring.amazon.ca/app#/jobSearch where the extension scans for shifts.\n\nYou will see a screenshot and context about the current page. Tell me EXACTLY what action to take.\n\nRespond in this EXACT format (one action only):\nACTION: CLICK_BUTTON | text of button to click\nACTION: CLICK_LINK | text of link to click\nACTION: FILL_INPUT | selector | value to type\nACTION: NAVIGATE | full URL to go to\nACTION: RELOAD | reason\nACTION: WAIT | seconds to wait\n\nRules:\n- Only give ONE action at a time\n- Be specific about button text (exact match)\n- If you see a login form, the extension has saved credentials — suggest NAVIGATE to trigger auto-fill\n- If you see an error message, suggest how to dismiss it\n- If totally lost, suggest NAVIGATE | https://hiring.amazon.ca/app#/jobSearch'
-                        },
-                        {
-                            role: 'user',
-                            content: [
-                                { type: 'image_url', image_url: { url: ssRes.dataUrl } },
-                                { type: 'text', text: 'The extension is STUCK in state: ' + stuckState + ' for ' + pageContext.stuckFor + '.\n\nURL: ' + pageContext.url + '\nPage title: ' + pageContext.title + '\nVisible buttons: ' + pageContext.visibleButtons.join(', ') + '\nVisible inputs: ' + JSON.stringify(pageContext.visibleInputs) + '\nBody text (first 500 chars): ' + pageContext.bodySnippet + '\n\nWhat single action should I take to proceed toward jobSearch?' }
-                            ]
-                        }
-                    ]
+                    model: 'qwen/qwen3.6-27b', max_tokens: 500, temperature: 0.1,
+                    messages: [{
+                        role: 'system',
+                        content: 'You are ShiftSniper Brain AI. The Amazon job-hunting extension is STUCK. Analyze the screenshot and context. Your goal: get to https://hiring.amazon.ca/app#/jobSearch.\n\nProvide:\n1. DIAGNOSIS: one line describing what you see\n2. ACTION: exactly one of:\n   CLICK_BUTTON | button text\n   CLICK_LINK | link text\n   FILL_INPUT | css-selector | value\n   NAVIGATE | url\n   RELOAD | reason\n   WAIT | seconds\n   RELOGIN | session expired\n\nRecent brain log: ' + pageContext.recentLog.join('; ') + '\nHealth score: ' + pageContext.healthScore + '/100'
+                    }, {
+                        role: 'user',
+                        content: [
+                            { type: 'image_url', image_url: { url: ssRes.dataUrl } },
+                            { type: 'text', text: 'STUCK: ' + stuckState + ' for ' + pageContext.stuckFor + '\nURL: ' + pageContext.url + '\nButtons: ' + pageContext.visibleButtons.join(', ') + '\nInputs: ' + JSON.stringify(pageContext.visibleInputs) + '\nPage: ' + pageContext.bodySnippet }
+                        ]
+                    }]
                 })
             });
-
-            clearTimeout(timeout);
+            clearTimeout(tmout);
             var gData = await gResp.json();
-            var aiResponse = (gData.choices && gData.choices[0] && gData.choices[0].message && gData.choices[0].message.content || '').trim();
-            console.log(LOG_PREFIX, '🤖 AI says:', aiResponse);
-
-            // Parse and execute AI instruction
-            _executeAIAction(aiResponse);
-
+            var aiText = (gData.choices && gData.choices[0] && gData.choices[0].message && gData.choices[0].message.content || '').trim();
+            logAction('ai', 'AI response: ' + aiText.slice(0, 150));
+            _executeAIAction(aiText);
         } catch(e) {
-            console.error(LOG_PREFIX, '🤖 AI call failed:', e.message);
-            // Last resort
+            logAction('ai', 'AI call failed: ' + e.message, false);
             window.location.reload();
         }
     }
 
-    // ── Execute AI's instruction ─────────────────────────────────────────────
+
     function _executeAIAction(response) {
-        // Parse the ACTION line
-        var actionMatch = response.match(/ACTION:\s*(CLICK_BUTTON|CLICK_LINK|FILL_INPUT|NAVIGATE|RELOAD|WAIT)\s*\|\s*(.*)/i);
+        var actionMatch = response.match(/ACTION:\s*(CLICK_BUTTON|CLICK_LINK|FILL_INPUT|NAVIGATE|RELOAD|WAIT|RELOGIN)\s*\|\s*(.*)/i);
         if (!actionMatch) {
-            console.log(LOG_PREFIX, '🤖 Could not parse AI response — reloading');
+            logAction('ai', 'Could not parse AI response', false);
             window.location.reload();
             return;
         }
-
         var actionType = actionMatch[1].toUpperCase();
         var actionParam = actionMatch[2].trim();
 
         switch (actionType) {
             case 'CLICK_BUTTON':
-                console.log(LOG_PREFIX, '🤖 Executing: click button "' + actionParam + '"');
                 var btns = document.querySelectorAll('button, [role="button"], input[type="submit"]');
                 var clicked = false;
                 for (var i = 0; i < btns.length; i++) {
-                    var btnText = (btns[i].textContent || btns[i].value || '').trim();
-                    if (btnText.toLowerCase().includes(actionParam.toLowerCase())) {
-                        btns[i].click();
-                        clicked = true;
-                        console.log(LOG_PREFIX, '🤖 ✅ Clicked button:', btnText);
+                    if ((btns[i].textContent || '').trim().toLowerCase().includes(actionParam.toLowerCase())) {
+                        btns[i].click(); clicked = true;
+                        logAction('ai', 'Clicked: ' + actionParam, true);
                         break;
                     }
                 }
-                if (!clicked) {
-                    console.log(LOG_PREFIX, '🤖 ❌ Button not found:', actionParam);
-                }
+                if (!clicked) logAction('ai', 'Button not found: ' + actionParam, false);
                 break;
-
             case 'CLICK_LINK':
-                console.log(LOG_PREFIX, '🤖 Executing: click link "' + actionParam + '"');
                 var links = document.querySelectorAll('a, [role="link"]');
                 for (var j = 0; j < links.length; j++) {
                     if ((links[j].textContent || '').trim().toLowerCase().includes(actionParam.toLowerCase())) {
                         links[j].click();
-                        console.log(LOG_PREFIX, '🤖 ✅ Clicked link');
+                        logAction('ai', 'Clicked link: ' + actionParam, true);
                         break;
                     }
                 }
                 break;
-
             case 'FILL_INPUT':
                 var parts = actionParam.split('|').map(function(s) { return s.trim(); });
                 if (parts.length >= 2) {
-                    var selector = parts[0];
-                    var value = parts[1];
-                    console.log(LOG_PREFIX, '🤖 Executing: fill "' + selector + '" with value');
-                    var input = document.querySelector(selector);
-                    if (input) {
-                        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                        nativeSetter.call(input, value);
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                        input.dispatchEvent(new Event('change', { bubbles: true }));
-                        console.log(LOG_PREFIX, '🤖 ✅ Filled input');
-                    } else {
-                        console.log(LOG_PREFIX, '🤖 ❌ Input not found:', selector);
+                    var el = document.querySelector(parts[0]);
+                    if (el) {
+                        var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        ns.call(el, parts[1]);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        logAction('ai', 'Filled input', true);
                     }
                 }
                 break;
-
             case 'NAVIGATE':
-                console.log(LOG_PREFIX, '🤖 Executing: navigate to', actionParam);
+                logAction('ai', 'Navigating to: ' + actionParam, true);
                 window.location.href = actionParam;
                 break;
-
             case 'RELOAD':
-                console.log(LOG_PREFIX, '🤖 Executing: reload —', actionParam);
+                logAction('ai', 'Reloading: ' + actionParam, true);
                 window.location.reload();
                 break;
-
-            case 'WAIT':
-                var waitSec = parseInt(actionParam) || 5;
-                console.log(LOG_PREFIX, '🤖 Executing: wait', waitSec + 's');
-                // After waiting, reset action count so brain retries
-                setTimeout(function() {
-                    _actionCount = 0;
-                    _aiEscalated = false;
-                    console.log(LOG_PREFIX, '🤖 Wait complete — resuming monitoring');
-                }, waitSec * 1000);
+            case 'RELOGIN':
+                logAction('ai', 'AI says session expired — re-logging in', true);
+                chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+                setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
                 break;
+            case 'WAIT':
+                var sec = parseInt(actionParam) || 5;
+                logAction('ai', 'Waiting ' + sec + 's', true);
+                setTimeout(function() { _actionCount = 0; _aiEscalated = false; }, sec * 1000);
+                break;
+        }
+        // Record in recovery memory
+        _recordRecovery(_currentState, actionType + ':' + actionParam);
+    }
 
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 6: MULTI-TAB AWARENESS
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _reloginStartedAt = 0;
+    var _reloginMaxWait = 150000; // 2.5 min max for re-login tab
+
+    function checkReloginTab() {
+        chrome.storage.local.get(['__reloginTabId', '__brain_relogin_ts'], function(d) {
+            if (!d.__reloginTabId) return;
+            var startTs = d.__brain_relogin_ts || 0;
+            if (!startTs) {
+                // Mark when we first saw the re-login tab
+                chrome.storage.local.set({ '__brain_relogin_ts': Date.now() });
+                return;
+            }
+            var elapsed = Date.now() - startTs;
+            if (elapsed > _reloginMaxWait) {
+                // Re-login tab is stuck > 2.5 min — kill it and try direct login
+                logAction('multi-tab', 'Re-login tab stuck for ' + Math.round(elapsed/1000) + 's — killing it');
+                chrome.runtime.sendMessage({ action: 'getTabId' }, function(resp) {
+                    // Can't close from content script — just clear the flag
+                    chrome.storage.local.remove(['__reloginTabId', '__brain_relogin_ts']);
+                    // Force a fresh re-login attempt
+                    setTimeout(function() {
+                        chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+                        chrome.storage.local.set({ '__brain_relogin_ts': Date.now() });
+                    }, 2000);
+                });
+            }
+        });
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 7: AUTO-EXPAND SEARCH
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _zeroShiftsSince = 0;       // timestamp of when 0-shift streak began
+    var _searchExpanded = false;
+    var _originalDistance = null;
+    var _expandAfterMs = 30 * 60 * 1000;  // 30 minutes of 0 shifts
+
+    function checkAutoExpand() {
+        if (_currentState !== 'JOBSEARCH_SCANNING') return;
+
+        var storeEl = document.getElementById('__ss_token_store');
+        if (!storeEl) return;
+        var jobs = parseInt(storeEl.getAttribute('data-jobs') || '0');
+
+        if (jobs > 0) {
+            // Jobs found — reset expand timer
+            _zeroShiftsSince = 0;
+            if (_searchExpanded) {
+                // Revert to original search radius
+                logAction('expand', 'Jobs found! Reverting to original search radius');
+                if (_originalDistance !== null) {
+                    chrome.storage.local.set({ 'distance': _originalDistance });
+                }
+                _searchExpanded = false;
+            }
+            return;
+        }
+
+        // 0 shifts
+        if (!_zeroShiftsSince) _zeroShiftsSince = Date.now();
+        var zeroFor = Date.now() - _zeroShiftsSince;
+
+        if (zeroFor > _expandAfterMs && !_searchExpanded) {
+            logAction('expand', '0 shifts for ' + Math.round(zeroFor/60000) + ' min — expanding search');
+            _searchExpanded = true;
+            // Save original and expand
+            chrome.storage.local.get(['distance'], function(d) {
+                _originalDistance = d.distance || 50;
+                var expanded = Math.min(200, _originalDistance * 2); // Double radius, max 200km
+                chrome.storage.local.set({ 'distance': expanded });
+                logAction('expand', 'Radius: ' + _originalDistance + 'km → ' + expanded + 'km');
+            });
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 8: NOTIFICATION DASHBOARD — Toast + health in ring label
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _lastToastTs = 0;
+
+    function brainToast(html, duration) {
+        if (Date.now() - _lastToastTs < 10000) return; // max 1 toast per 10s
+        _lastToastTs = Date.now();
+        if (typeof Swal === 'undefined') return;
+        Swal.fire({
+            toast: true,
+            position: 'top-end',
+            timer: duration || 4000,
+            showConfirmButton: false,
+            timerProgressBar: true,
+            background: 'rgba(8,8,25,0.93)',
+            html: '<div style="font-size:12px;font-family:sans-serif;color:rgba(199,210,254,0.9);">🧠 ' + html + '</div>'
+        });
+    }
+
+    function updateRingWithHealth() {
+        var lbl = document.getElementById('ss-lbl');
+        if (!lbl) return;
+        var ring = document.getElementById('ss-ring');
+        if (!ring || ring.style.display === 'none') return;
+
+        // Only update if currently showing a neutral/ok state
+        var currentText = lbl.textContent || '';
+        if (/Active|Job Checking|0 shifts/i.test(currentText)) {
+            var h = _health.score;
+            var emoji = h >= 80 ? '✅' : h >= 50 ? '⚡' : '⚠️';
+            lbl.textContent = 'Active - 0 shifts ' + emoji + ' ' + h;
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 9: RECOVERY MEMORY — Remember what worked
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _recoveryMemory = {}; // { state: { action: 'type:param', successCount: n } }
+    var _memoryLoaded = false;
+
+    function _recordRecovery(state, actionStr) {
+        if (!_recoveryMemory[state]) _recoveryMemory[state] = {};
+        if (!_recoveryMemory[state][actionStr]) _recoveryMemory[state][actionStr] = { success: 0, fail: 0 };
+        // We'll mark success when state transitions away (checked in setState)
+        _recoveryMemory[state]._lastAction = actionStr;
+        _recoveryMemory[state]._lastActionTs = Date.now();
+    }
+
+    function _markRecoverySuccess(fromState) {
+        if (!_recoveryMemory[fromState] || !_recoveryMemory[fromState]._lastAction) return;
+        var action = _recoveryMemory[fromState]._lastAction;
+        if (_recoveryMemory[fromState][action]) {
+            _recoveryMemory[fromState][action].success++;
+        }
+        // Save to storage every time we have a success
+        chrome.storage.local.set({ '__brain_recovery': _recoveryMemory });
+    }
+
+    function getBestRecoveryAction(state) {
+        if (!_recoveryMemory[state]) return null;
+        var best = null, bestScore = -1;
+        for (var key in _recoveryMemory[state]) {
+            if (key.startsWith('_')) continue; // skip internal keys
+            var entry = _recoveryMemory[state][key];
+            var score = entry.success - entry.fail;
+            if (score > bestScore) { bestScore = score; best = key; }
+        }
+        return best; // e.g. "CLICK_BUTTON:Search all jobs"
+    }
+
+    // Load saved recovery memory
+    chrome.storage.local.get(['__brain_recovery'], function(d) {
+        if (d['__brain_recovery']) { _recoveryMemory = d['__brain_recovery']; _memoryLoaded = true; }
+    });
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE 10: PROACTIVE SESSION REFRESH — Refresh BEFORE expiry
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _sessionStartTs = Date.now();
+    var _SESSION_LIFETIME = 35 * 60 * 1000; // Refresh at 35 min (before 40-min expiry)
+    var _proactiveRefreshDone = false;
+
+    function checkProactiveRefresh() {
+        if (_currentState !== 'JOBSEARCH_SCANNING') return;
+        if (_proactiveRefreshDone) return;
+
+        var sessionAge = Date.now() - _sessionStartTs;
+        if (sessionAge > _SESSION_LIFETIME) {
+            _proactiveRefreshDone = true;
+            logAction('refresh', 'Proactive session refresh at ' + Math.round(sessionAge/60000) + ' min');
+            brainToast('🔄 <b style="color:#22d3ee;">Refreshing session proactively...</b>');
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            // After re-login, reload this tab to pick up fresh cookies
+            setTimeout(function() {
+                _sessionStartTs = Date.now(); // Reset timer
+                _proactiveRefreshDone = false;
+                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            }, 35000);
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CORE: STATE MACHINE
+    // ═══════════════════════════════════════════════════════════════════════════
+    var STATE_TIMEOUTS = {
+        'LOGIN_PAGE': 20000, 'LOGIN_FILLING': 15000, 'WELCOME_BACK': 5000,
+        'AUTH_VERIFY_TYPE': 15000, 'AUTH_CAPTCHA': 45000, 'AUTH_OTP': 90000,
+        'REDIRECT': 15000, 'JOBSEARCH_SCANNING': null,
+        'JOB_APPLYING': 30000, 'RELOGIN_BG': 180000, 'IDLE': null
+    };
+
+    var _currentState = 'IDLE';
+    var _stateEnteredAt = Date.now();
+    var _lastAction = null;
+    var _actionCount = 0;
+    var _maxActionsPerState = 3;
+    var _aiEscalated = false;
+
+    function setState(newState) {
+        if (newState === _currentState) return;
+        // Record timing of previous state (how long it took to transition)
+        var duration = Date.now() - _stateEnteredAt;
+        if (_currentState !== 'IDLE' && _currentState !== 'JOBSEARCH_SCANNING') {
+            recordTiming(_currentState, duration);
+        }
+        // Mark recovery success if we transitioned OUT of a stuck state
+        if (_actionCount > 0) _markRecoverySuccess(_currentState);
+
+        logAction('state', _currentState + ' → ' + newState + ' (' + Math.round(duration/1000) + 's)');
+        _currentState = newState;
+        _stateEnteredAt = Date.now();
+        _actionCount = 0;
+        _aiEscalated = false;
+        chrome.storage.local.set({ '__brain_state': newState, '__brain_ts': _stateEnteredAt });
+
+        // Reset session timer when we arrive at jobSearch
+        if (newState === 'JOBSEARCH_SCANNING') {
+            _sessionStartTs = Date.now();
+            _proactiveRefreshDone = false;
+        }
+    }
+
+    function stateAge() { return Date.now() - _stateEnteredAt; }
+
+
+    // ── State Detection ──────────────────────────────────────────────────────
+    function detectState() {
+        var url = window.location.href;
+        var bodyText = (document.body && document.body.innerText) || '';
+
+        if (url.includes('auth.hiring.amazon')) {
+            var captchaCount = 0;
+            var imgs = document.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) {
+                var r = imgs[i].getBoundingClientRect();
+                if (r.width >= 60 && r.width <= 350 && r.height >= 60 && r.height <= 350 &&
+                    r.bottom > 50 && imgs[i].src && imgs[i].src.startsWith('http')) captchaCount++;
+            }
+            if (captchaCount >= 6 || document.querySelector('awswaf-captcha, [id*="awswaf"]') ||
+                bodyText.includes('confirm you are human')) return 'AUTH_CAPTCHA';
+            if (bodyText.includes('verification code has been sent') ||
+                document.querySelector('input[data-test-id="input-test-id-code"]')) return 'AUTH_OTP';
+            if (bodyText.includes('Where should we send your verification code')) return 'AUTH_VERIFY_TYPE';
+            if (url.includes('#/login') || url.includes('/login')) {
+                var isWelcome = bodyText.includes('Welcome back') || bodyText.includes('continue where you left');
+                var hasSearch = false;
+                var els = document.querySelectorAll('button, a');
+                for (var w = 0; w < els.length; w++) { if (/search all jobs/i.test(els[w].textContent)) { hasSearch = true; break; } }
+                if (isWelcome || (hasSearch && !document.querySelector('input[data-test-id="input-test-id-login"]'))) return 'WELCOME_BACK';
+                var pin = document.querySelector('input[data-test-id="input-test-id-pin"]');
+                if (pin) return 'LOGIN_FILLING';
+                var email = document.querySelector('input[data-test-id="input-test-id-login"]');
+                if (email && email.value) return 'LOGIN_FILLING';
+                if (email) return 'LOGIN_PAGE';
+                return 'LOGIN_PAGE';
+            }
+            return 'REDIRECT';
+        }
+
+        if (url.includes('hiring.amazon')) {
+            if (url.includes('app#/jobSearch') || url.includes('app#/jobDetail') && !url.includes('jobDetail')) return 'JOBSEARCH_SCANNING';
+            if (url.includes('app#/jobDetail') || url.includes('/application/')) return 'JOB_APPLYING';
+            if (url.includes('contactInformation')) return 'REDIRECT';
+            if (url.includes('#/login')) {
+                var isW = bodyText.includes('Welcome back') || bodyText.includes('continue where you left');
+                var hasS = false;
+                var els2 = document.querySelectorAll('button, a');
+                for (var w2 = 0; w2 < els2.length; w2++) { if (/search all jobs/i.test(els2[w2].textContent)) { hasS = true; break; } }
+                if (isW || hasS) return 'WELCOME_BACK';
+                return 'LOGIN_PAGE';
+            }
+            return 'REDIRECT';
+        }
+        return 'IDLE';
+    }
+
+
+    // ── Corrective Actions ───────────────────────────────────────────────────
+    function fixStuckState(state) {
+        _actionCount++;
+        _lastAction = Date.now();
+        var age = Math.round(stateAge() / 1000);
+
+        // Check if primary fix keeps failing — use alternative
+        var primaryFix = state; // same as state name for tracking
+        if (shouldSkipFix(state, primaryFix)) {
+            logAction('fix', 'Primary fix for ' + state + ' keeps failing — using alternative');
+            var alt = getAlternativeFix(state);
+            if (alt === 'reload') { window.location.reload(); recordFixResult(state, 'alt_reload', true); return; }
+            if (alt === 'navigate_job') { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; return; }
+        }
+
+        // Check recovery memory for a known-good fix
+        var remembered = getBestRecoveryAction(state);
+        if (remembered && _actionCount === 1) {
+            logAction('fix', 'Using remembered fix: ' + remembered);
+            _executeAIAction('ACTION: ' + remembered.replace(':', ' | '));
+            return;
+        }
+
+        // Escalate to AI after max attempts
+        if (_actionCount > _maxActionsPerState) {
+            if (!_aiEscalated) { _aiEscalated = true; _askAI(state); }
+            else { logAction('fix', 'Last resort reload'); window.location.reload(); }
+            return;
+        }
+
+        logAction('fix', 'Fixing ' + state + ' (action #' + _actionCount + ', age ' + age + 's)');
+
+        switch (state) {
+            case 'WELCOME_BACK':
+                var els = document.querySelectorAll('button, a');
+                for (var w = 0; w < els.length; w++) {
+                    if (/search all jobs/i.test(els[w].textContent)) { els[w].click(); recordFixResult(state, primaryFix, true); return; }
+                }
+                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+                break;
+            case 'LOGIN_PAGE':
+                chrome.runtime.sendMessage({ action: 'activate', status: true });
+                recordFixResult(state, primaryFix, null);
+                break;
+            case 'LOGIN_FILLING':
+                var btn = document.querySelector('button[data-test-id="button-continue"]');
+                if (btn) btn.click();
+                else {
+                    var divs = document.querySelectorAll('div[data-test-component="StencilReactRow"]');
+                    for (var d = 0; d < divs.length; d++) { if (divs[d].textContent.trim() === 'Continue') { divs[d].click(); break; } }
+                }
+                break;
+            case 'AUTH_VERIFY_TYPE':
+                var radios = document.querySelectorAll('input[type="radio"], [role="radio"]');
+                for (var r = 0; r < radios.length; r++) {
+                    var lbl = radios[r].closest('label') || radios[r].parentElement;
+                    if (lbl && lbl.textContent.toLowerCase().includes('email')) { radios[r].click(); break; }
+                }
+                setTimeout(function() {
+                    var btns = document.querySelectorAll('button');
+                    for (var b = 0; b < btns.length; b++) { if (btns[b].textContent.includes('Send verification code')) { btns[b].click(); break; } }
+                }, 500);
+                break;
+            case 'AUTH_CAPTCHA':
+                logAction('fix', 'CAPTCHA stuck — waiting for auth.js captchaWatcher');
+                setTimeout(function() { if (detectState() === 'AUTH_CAPTCHA' && stateAge() > 60000) window.location.reload(); }, 15000);
+                break;
+            case 'AUTH_OTP':
+                chrome.runtime.sendMessage({ action: 'refreshGmailTab' });
+                break;
+            case 'REDIRECT':
+                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+                break;
+            case 'JOB_APPLYING':
+                var ab = document.querySelector('button[data-test-id="jobDetailApplyButtonDesktop"]');
+                var sb = document.querySelector('button[data-test-id="ScheduleCardSelectScheduleLink"]');
+                if (ab) ab.click(); else if (sb) sb.click();
+                else window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+                break;
+            case 'JOBSEARCH_SCANNING':
+                chrome.runtime.sendMessage({ action: 'activate', status: true });
+                setTimeout(function() {
+                    var btns = document.querySelectorAll('button');
+                    for (var n = 0; n < btns.length; n++) { if (btns[n].textContent.trim() === 'All') { btns[n].click(); break; } }
+                }, 2000);
+                break;
             default:
-                console.log(LOG_PREFIX, '🤖 Unknown action type:', actionType);
                 window.location.reload();
         }
     }
 
-    // ── Main loop ────────────────────────────────────────────────────────────
+
+    // ── Scan Health Check ────────────────────────────────────────────────────
+    function checkScanHealth() {
+        if (_currentState !== 'JOBSEARCH_SCANNING') return;
+        if (_lastAction && (Date.now() - _lastAction < 60000)) return; // 60s cooldown
+
+        var bodyText = (document.body && document.body.innerText) || '';
+        if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
+            logAction('health', '"Problem loading page" — session expired, re-logging in');
+            _lastAction = Date.now();
+            recordError();
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            brainToast('🔄 <b style="color:#f59e0b;">Session expired — re-logging in...</b>', 8000);
+            setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+            return;
+        }
+
+        // Ensure "All" tab selected
+        var allTab = null, recTab = null;
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+            var txt = btns[i].textContent.trim();
+            if (txt === 'All') allTab = btns[i];
+            if (txt === 'Recommended') recTab = btns[i];
+        }
+        if (recTab && allTab && recTab.getAttribute('aria-selected') === 'true') {
+            allTab.click();
+        }
+
+        var storeEl = document.getElementById('__ss_token_store');
+        if (!storeEl) return;
+        var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
+        var staleness = Date.now() - lastTs;
+
+        if (lastTs > 0 && staleness > 90000) {
+            logAction('health', 'Stale ' + Math.round(staleness/1000) + 's — re-logging in');
+            _lastAction = Date.now();
+            recordError();
+            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            brainToast('🔄 <b style="color:#f59e0b;">Data stale — refreshing session...</b>', 8000);
+            setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+            return;
+        }
+
+        if (lastTs > 0 && staleness > 30000) {
+            logAction('health', 'Stale ' + Math.round(staleness/1000) + 's — tab toggle');
+            _lastAction = Date.now();
+            if (recTab && allTab) { recTab.click(); setTimeout(function() { allTab.click(); }, 1000); }
+            else if (allTab) allTab.click();
+        }
+
+        if (lastTs === 0 && stateAge() > 15000) {
+            _lastAction = Date.now();
+            if (allTab) allTab.click();
+        }
+    }
+
+    // ── Popup / Blank checks ─────────────────────────────────────────────────
+    function checkSignInPopup() {
+        var swal = document.querySelector('.swal2-popup.swal2-show, .swal2-container.swal2-shown .swal2-popup');
+        if (swal && /sign.?in again|session expired|please sign/i.test(swal.innerText || '')) {
+            var ok = swal.querySelector('.swal2-confirm');
+            if (ok) { ok.click(); setTimeout(function() { chrome.runtime.sendMessage({ action: 'reloginInNewTab' }); }, 800); }
+            return true;
+        }
+        return false;
+    }
+    function checkBlankPage() {
+        var len = (document.body && document.body.innerText || '').trim().length;
+        if (len < 20 && stateAge() > 10000 && _currentState !== 'IDLE') { window.location.reload(); return true; }
+        return false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN LOOP
+    // ═══════════════════════════════════════════════════════════════════════════
     function tick() {
-        // Skip if Swal dialog is showing (don't interfere with user interaction)
         var swalShowing = document.querySelector('.swal2-container.swal2-shown');
         if (swalShowing && !checkSignInPopup()) return;
 
-        // Detect current state
+        // Detect state
         var detected = detectState();
-        if (detected !== _currentState) {
-            setState(detected);
+        if (detected !== _currentState) setState(detected);
+
+        // Update health score
+        updateHealth();
+
+        // Check for intercept (track for health)
+        var storeEl = document.getElementById('__ss_token_store');
+        if (storeEl) {
+            var ts = parseInt(storeEl.getAttribute('data-ts') || '0');
+            if (ts > _health.lastIntercept && ts > 0) recordIntercept();
         }
 
-        // Check for blank page
         if (checkBlankPage()) return;
 
-        // Check scan health specifically
+        // Run all feature checks
         checkScanHealth();
+        checkAutoExpand();
+        checkReloginTab();
+        checkProactiveRefresh();
+        updateRingWithHealth();
 
-        // Check if we've exceeded the timeout for current state
-        var timeout = STATE_TIMEOUTS[_currentState];
-        if (timeout && stateAge() > timeout) {
-            fixStuckState(_currentState);
-        }
+        // Check state timeout (using smart timing if available)
+        var timeout = getSmartTimeout(_currentState);
+        if (timeout && stateAge() > timeout) fixStuckState(_currentState);
     }
 
     // ── Boot ─────────────────────────────────────────────────────────────────
-    // Wait 3s before starting (let fetch.js and auth.js initialize first)
     setTimeout(function() {
-        var initialState = detectState();
-        setState(initialState);
-        console.log(LOG_PREFIX, '🧠 Brain active — initial state:', initialState);
-
-        // Run tick every POLL_INTERVAL
+        var initial = detectState();
+        setState(initial);
+        logAction('state', '🧠 Brain v2 active — state: ' + initial + ' | Health: ' + updateHealth());
         setInterval(tick, POLL_INTERVAL);
     }, 3000);
 
-    // ── Expose for debugging ─────────────────────────────────────────────────
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DEBUG CONSOLE API
+    // ═══════════════════════════════════════════════════════════════════════════
     window.__ss_brain = {
-        getState: function() { return _currentState; },
-        getAge: function() { return Math.round(stateAge() / 1000) + 's'; },
-        getActions: function() { return _actionCount; },
-        aiEscalated: function() { return _aiEscalated; },
+        // Basic status
         status: function() {
             return {
                 state: _currentState,
                 age: Math.round(stateAge() / 1000) + 's',
+                health: _health.score + '/100',
+                interceptsPerMin: _health.interceptsPerMin,
+                errorsLast5Min: _health.errorsLast5Min,
                 actions: _actionCount,
                 aiEscalated: _aiEscalated,
+                searchExpanded: _searchExpanded,
                 lastAction: _lastAction ? new Date(_lastAction).toLocaleTimeString() : 'never'
             };
         },
-        // Manual trigger: force AI to analyze current screen
-        askAI: function() { _askAI(_currentState); }
+        // Activity log
+        log: function(n) {
+            var entries = _activityLog.slice(-(n || 20));
+            console.table(entries);
+            return entries;
+        },
+        // Health details
+        health: function() { return _health; },
+        // Smart timings learned
+        timings: function() { return _timings; },
+        // Recovery memory
+        memory: function() { return _recoveryMemory; },
+        // Failure history
+        failures: function() { return _failureHistory; },
+        // Manual AI trigger
+        askAI: function() { _askAI(_currentState); },
+        // Force expand search
+        expandSearch: function() { _searchExpanded = false; _zeroShiftsSince = Date.now() - _expandAfterMs - 1; checkAutoExpand(); },
+        // Force session refresh
+        refreshSession: function() { _proactiveRefreshDone = false; _sessionStartTs = 0; checkProactiveRefresh(); },
+        // Reset all brain data
+        reset: function() {
+            _activityLog = []; _timings = {}; _failureHistory = {}; _recoveryMemory = {};
+            chrome.storage.local.remove(['__brain_timings', '__brain_recovery', '__brain_state']);
+            console.log(LOG_PREFIX, '🧹 Brain reset complete');
+        }
     };
 
 })();
