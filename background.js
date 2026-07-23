@@ -415,8 +415,8 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
                                         if (!timeText) return false;
                                         var t = timeText.trim().toLowerCase();
                                         // Gmail shows: "just now", "1 min ago", "2 min ago", "10:35 AM", etc.
-                                        if (/just now|moments? ago|now/i.test(t)) return true;
-                                        // "X min ago" — accept if <= 4 min
+                                        if (/just now|moments? ago|now|0 min/i.test(t)) return true;
+                                        // "X min ago" or "X minutes ago" — accept if <= 4 min
                                         var minMatch = t.match(/(\d+)\s*min/);
                                         if (minMatch && parseInt(minMatch[1]) <= 4) return true;
                                         // "X sec ago"
