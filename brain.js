@@ -592,7 +592,7 @@
     // ═══════════════════════════════════════════════════════════════════════════
     var STATE_TIMEOUTS = {
         'LOGIN_PAGE': 20000, 'LOGIN_FILLING': 15000, 'WELCOME_BACK': 5000,
-        'HOMEPAGE': 5000,    // 5s — just need to redirect to login
+        'HOMEPAGE': 5000, 'CAPTCHA_BEGIN': 3000, 'CAPTCHA_GRID': 45000,
         'AUTH_VERIFY_TYPE': 15000, 'AUTH_CAPTCHA': 45000, 'AUTH_OTP': 90000,
         'REDIRECT': 15000, 'JOBSEARCH_SCANNING': null,
         'JOB_APPLYING': 30000, 'RELOGIN_BG': 180000, 'IDLE': null
@@ -671,6 +671,26 @@
         }
 
         if (url.includes('hiring.amazon')) {
+            // ── CAPTCHA / Human Verification page (can appear on ANY hiring.amazon page)
+            var hasBeginBtn = false;
+            var allPageEls = document.querySelectorAll('button, input[type="submit"], a');
+            for (var cb = 0; cb < allPageEls.length; cb++) {
+                if (/^begin/i.test((allPageEls[cb].textContent || '').trim())) { hasBeginBtn = true; break; }
+            }
+            if ((bodyText.includes('confirm you are human') || bodyText.includes('Let\u2019s confirm you are human')) && hasBeginBtn) {
+                return 'CAPTCHA_BEGIN';
+            }
+            // CAPTCHA grid (Choose all the...)
+            var captchaImgCount = 0;
+            var allImgs = document.querySelectorAll('img');
+            for (var ci = 0; ci < allImgs.length; ci++) {
+                var cr = allImgs[ci].getBoundingClientRect();
+                if (cr.width >= 70 && cr.width <= 250 && cr.height >= 70 && cr.height <= 250 && cr.top > 30) captchaImgCount++;
+            }
+            if (captchaImgCount >= 6 || bodyText.includes('Choose all')) {
+                return 'CAPTCHA_GRID';
+            }
+
             if (url.includes('app#/jobSearch') || url.includes('app#/jobDetail') && !url.includes('jobDetail')) return 'JOBSEARCH_SCANNING';
             if (url.includes('app#/jobDetail') || url.includes('/application/')) return 'JOB_APPLYING';
             if (url.includes('contactInformation')) return 'REDIRECT';
@@ -730,6 +750,26 @@
         logAction('fix', 'Fixing ' + state + ' (action #' + _actionCount + ', age ' + age + 's)');
 
         switch (state) {
+            case 'CAPTCHA_BEGIN':
+                // "Let's confirm you are human" with Begin button — just click Begin
+                console.log(LOG_PREFIX, '🔧 Human verification page — clicking Begin');
+                var beginBtns = document.querySelectorAll('button, input[type="submit"], a');
+                for (var bg = 0; bg < beginBtns.length; bg++) {
+                    if (/^begin/i.test((beginBtns[bg].textContent || '').trim())) {
+                        beginBtns[bg].click();
+                        logAction('fix', 'Clicked "Begin" on human verification page', true);
+                        break;
+                    }
+                }
+                break;
+
+            case 'CAPTCHA_GRID':
+                // CAPTCHA grid showing on main domain — trigger the same solve flow as auth.js
+                // auth.js might not be loaded here, so we handle it directly via screenshot + Groq
+                console.log(LOG_PREFIX, '🔧 CAPTCHA grid on main domain — triggering AI solve');
+                _askAI('CAPTCHA_GRID');
+                break;
+
             case 'HOMEPAGE':
                 // On homepage, not logged in — navigate to login page
                 console.log(LOG_PREFIX, '🔧 On homepage (not logged in) — redirecting to login');
