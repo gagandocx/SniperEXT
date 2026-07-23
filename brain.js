@@ -565,25 +565,24 @@
             return;
         }
 
-        // 2+ consecutive stale checks OR page error → session is DEAD, re-login
+        // 2+ consecutive stale checks OR page error → session is DEAD
         if (_consecutiveStaleChecks >= 2 || hasError) {
             _consecutiveStaleChecks = 0;
             _reloginInProgress = true;
             var reason = hasError ? 'page error' : 'stale for ' + Math.round(staleness/1000) + 's';
-            logAction('session', '❌ Session DEAD (' + reason + ') — re-logging in background tab');
-            brainToast('🔄 <b style="color:#f59e0b;">Session expired — re-logging in...</b>', 8000);
+            logAction('session', '❌ Session DEAD (' + reason + ') — cooling down 60s then fresh login');
+            brainToast('⏸️ <b style="color:#f59e0b;">Session dead — pausing 60s before fresh login...</b>', 15000);
             recordError();
 
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
+            // Close extra tabs
+            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
 
-            // Wait for re-login to complete, then reload this tab
+            // Wait 60 seconds then do a completely fresh login
             setTimeout(function() {
-                logAction('session', 'Re-login wait complete — reloading to pick up fresh session');
+                logAction('session', '60s cooldown complete — navigating to fresh login');
                 _reloginInProgress = false;
-                // Close extra tabs before navigating
-                chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
-                window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
-            }, 35000);
+                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
+            }, 60000);
         }
     }
 
@@ -814,12 +813,24 @@
 
         var bodyText = (document.body && document.body.innerText) || '';
         if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
-            logAction('health', '"Problem loading page" — session expired, re-logging in');
+            logAction('health', '"Problem loading page" — cooling down 60s then fresh login');
             _lastAction = Date.now();
+            _reloginInProgress = true;
             recordError();
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-            brainToast('🔄 <b style="color:#f59e0b;">Session expired — re-logging in...</b>', 8000);
-            setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+
+            // Close extra tabs first
+            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
+
+            // STOP everything for 60 seconds — don't spam Amazon
+            brainToast('⏸️ <b style="color:#f59e0b;">Error detected — pausing 60s before fresh login...</b>', 15000);
+            console.log(LOG_PREFIX, '⏸️ Cooling down for 60 seconds...');
+
+            setTimeout(function() {
+                logAction('health', '60s cooldown complete — starting fresh login');
+                _reloginInProgress = false;
+                // Navigate directly to auth login for a completely fresh start
+                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
+            }, 60000);
             return;
         }
 
