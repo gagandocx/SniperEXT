@@ -231,6 +231,75 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return true;
     }
 
+    // ── Background Mode: Open Amazon in a tiny off-screen window ───────────────
+    // Creates a small window positioned off-screen so it's invisible but active.
+    // Chrome won't throttle tabs in focused windows (even tiny ones).
+    if (a['action'] === 'startBackgroundWindow') {
+        (async function() {
+            try {
+                // Check if background window already exists
+                var bgWinId = await new Promise(function(res) {
+                    chrome.storage.local.get(['__bgWindowId'], function(d) { res(d.__bgWindowId || null); });
+                });
+                if (bgWinId) {
+                    // Check if it still exists
+                    try {
+                        await new Promise(function(res, rej) {
+                            chrome.windows.get(bgWinId, function(w) {
+                                if (chrome.runtime.lastError || !w) rej();
+                                else res(w);
+                            });
+                        });
+                        console.log('[bg] Background window already exists:', bgWinId);
+                        c({ success: true, windowId: bgWinId, existing: true });
+                        return;
+                    } catch(e) {
+                        // Window was closed — create new one
+                    }
+                }
+
+                // Create a small window positioned off-screen
+                var win = await new Promise(function(res) {
+                    chrome.windows.create({
+                        url: 'https://hiring.amazon.ca/app#/jobSearch',
+                        type: 'popup',
+                        width: 400,
+                        height: 300,
+                        left: -500,   // Off-screen to the left
+                        top: -500,    // Off-screen to the top
+                        focused: false
+                    }, res);
+                });
+
+                console.log('[bg] Background window created:', win.id);
+                chrome.storage.local.set({ '__bgWindowId': win.id });
+
+                // Minimize it immediately (double-ensure it's out of the way)
+                setTimeout(function() {
+                    chrome.windows.update(win.id, { state: 'minimized' });
+                }, 2000);
+
+                c({ success: true, windowId: win.id, existing: false });
+            } catch(err) {
+                console.error('[bg] startBackgroundWindow error:', err);
+                c({ error: err.message });
+            }
+        })();
+        return true;
+    }
+
+    // ── Close background window ──────────────────────────────────────────────
+    if (a['action'] === 'closeBackgroundWindow') {
+        chrome.storage.local.get(['__bgWindowId'], function(d) {
+            if (d.__bgWindowId) {
+                chrome.windows.remove(d.__bgWindowId, function() {});
+                chrome.storage.local.remove('__bgWindowId');
+            }
+            c({ done: true });
+        });
+        return true;
+    }
+
     // ── Re-login in a NEW background tab (v8.9.5.2) ───────────────────────────
     // Opens auth page in a new tab, lets fetch.js + auth.js auto-fill login,
     // then closes the tab once login completes (reaches jobSearch).

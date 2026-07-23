@@ -921,6 +921,24 @@
         expandSearch: function() { _searchExpanded = false; _zeroShiftsSince = Date.now() - _expandAfterMs - 1; checkAutoExpand(); },
         // Force session check now
         checkSession: function() { _lastSessionCheck = 0; _consecutiveStaleChecks = 0; checkSessionAlive(); },
+        // ── BACKGROUND MODE ──────────────────────────────────────────────────
+        // Opens Amazon in a tiny hidden window — scanning runs there invisibly
+        goBackground: function() {
+            chrome.runtime.sendMessage({ action: 'startBackgroundWindow' }, function(r) {
+                if (r && r.success) {
+                    console.log(LOG_PREFIX, '🖥️ Background window ' + (r.existing ? 'already running' : 'created') + ' (ID: ' + r.windowId + ')');
+                    console.log(LOG_PREFIX, '💡 You can close this tab now — scanning continues in background window');
+                } else {
+                    console.log(LOG_PREFIX, '❌ Failed to create background window:', r && r.error);
+                }
+            });
+        },
+        // Close the background window
+        stopBackground: function() {
+            chrome.runtime.sendMessage({ action: 'closeBackgroundWindow' }, function() {
+                console.log(LOG_PREFIX, '🖥️ Background window closed');
+            });
+        },
         // Reset all brain data
         reset: function() {
             _activityLog = []; _timings = {}; _failureHistory = {}; _recoveryMemory = {};

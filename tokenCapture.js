@@ -179,5 +179,34 @@
         } catch(e) {}
     }
 
-    console.log('[SS] v8.9.1.0 ready — Response.prototype interceptor active');
+    // ── Auto-refresh loop: ensures Amazon keeps making API calls ────────────
+    // In background mode (minimized window), the page might stop making calls.
+    // This forces a tab toggle every N seconds to keep data flowing.
+    var _autoRefreshInterval = null;
+
+    function startAutoRefresh() {
+        if (_autoRefreshInterval) return;
+        // Read scan interval from storage, default 3s
+        var interval = 3000;
+        try {
+            var el = document.getElementById('__ss_token_store');
+            if (el && el.getAttribute('data-interval')) {
+                interval = parseInt(el.getAttribute('data-interval')) || 3000;
+            }
+        } catch(e) {}
+
+        // Every interval: if data is stale, force tab toggle
+        _autoRefreshInterval = setInterval(function() {
+            var staleness = Date.now() - _lastJobDataTs;
+            // Only refresh if data is older than the interval (stale)
+            if (staleness > Math.max(interval, 3000)) {
+                _triggerRefresh();
+            }
+        }, Math.max(interval, 2000));
+    }
+
+    // Start auto-refresh after 5s (let page settle)
+    setTimeout(startAutoRefresh, 5000);
+
+    console.log('[SS] v8.9.6.2 ready — Response.prototype interceptor + auto-refresh active');
 })();
