@@ -343,10 +343,14 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
     }
 
     // ── OTP: read from Gmail tab → fill → click Continue ────────────────────────
+    var _otpRequestedAt = 0; // Timestamp when OTP was requested — only accept newer emails
+    var _lastUsedOtp = null; // Last OTP code we tried — skip if same code appears again
+
     async function handleOTP() {
         clearInterval(_captchaWatcherInterval);
         _captchaHandling = true;
-        console.log('[auth.js] ══ handleOTP START ══', new Date().toLocaleTimeString());
+        _otpRequestedAt = Date.now(); // Mark: only accept emails AFTER this time
+        console.log('[auth.js] ══ handleOTP START ══', new Date().toLocaleTimeString(), 'requestedAt:', _otpRequestedAt);
         // Clear any stale redirect flag from previous sessions
         chrome.storage.local.remove('_pendingJobRedirect');
 
@@ -370,7 +374,13 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
         let otp = null;
         for (let i = 0; i < 10 && !otp; i++) {
             otp = await fetchOTPFromGmail();
-            console.log('[auth.js] OTP poll', i+1, '→', otp || 'null');
+            // Skip if this is the same code we already tried (old/expired)
+            if (otp && otp === _lastUsedOtp) {
+                console.log('[auth.js] OTP poll', i+1, '→ SKIPPED (same as last used:', otp, ')');
+                otp = null; // treat as not found, keep polling for new one
+            } else {
+                console.log('[auth.js] OTP poll', i+1, '→', otp || 'null');
+            }
             if (!otp) { toast('📬 Checking Gmail ' + (i+1) + '/10...', 3200); await sleep(4000); }
         }
 
@@ -410,6 +420,7 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
             return;
         }
         console.log('[auth.js] ✅ OTP found:', otp);
+        _lastUsedOtp = otp; // Remember so we don't reuse if it fails
         toast('✅ <b style="color:#00d4ff;">Code received: ' + otp + ' — filling in...</b>', 4000);
 
         // Step 3: Find OTP input
@@ -500,7 +511,7 @@ FINAL ANSWER: [e.g. 1,3,7] or NONE` }
 
     async function fetchOTPFromGmail() {
         return new Promise(resolve => {
-            chrome.runtime.sendMessage({ action: 'fetchGmailOTP' }, function(r) {
+            chrome.runtime.sendMessage({ action: 'fetchGmailOTP', requestedAt: _otpRequestedAt || Date.now() }, function(r) {
                 if (chrome.runtime.lastError) {
                     console.error('[auth.js] fetchGmailOTP error:', chrome.runtime.lastError.message);
                     resolve(null);

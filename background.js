@@ -353,7 +353,13 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return !![];
     }
     if (a['action'] === 'fetchGmailOTP') {
-        // Read OTP from Gmail — focus each tab to wake from Chrome throttle, click email if needed
+        // v8.9.6.1: Smart OTP reader — only grabs NEW codes (after requestedAt timestamp)
+        // 1. Force-reloads Gmail to get fresh emails
+        // 2. Only accepts codes from emails received AFTER the OTP was requested
+        // 3. Checks email time labels to filter out old/expired codes
+
+        var requestedAt = a.requestedAt || (Date.now() - 60000); // fallback: last 60s
+
         chrome['tabs']['query']({ 'url': '*://mail.google.com/*' }, function(tabs) {
             if (!tabs || !tabs.length) {
                 console.log('[bg] No Gmail tab open');
@@ -361,73 +367,146 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
                 return;
             }
 
-            // Remember active tab to restore later
-            chrome['tabs']['query']({ 'active': true, 'currentWindow': true }, function(activeTabs) {
-                var previousTabId = activeTabs && activeTabs[0] ? activeTabs[0]['id'] : null;
-                var tabIndex = 0;
+            // Step 1: Force-reload the first Gmail tab to get fresh emails
+            var gmailTabId = tabs[0]['id'];
+            chrome['tabs']['reload'](gmailTabId, { bypassCache: true });
+            console.log('[bg] Force-reloaded Gmail tab:', gmailTabId);
 
-                function restoreTab() {
-                    if (previousTabId) chrome['tabs']['update'](previousTabId, { 'active': true });
+            // Step 2: Wait for Gmail to fully load after reload
+            var loadTries = 0;
+            function waitForGmailLoad() {
+                loadTries++;
+                if (loadTries > 15) { // 15 * 1s = 15s max wait
+                    proceedToRead();
+                    return;
                 }
-
-                function tryNextTab() {
-                    if (tabIndex >= tabs.length) {
-                        restoreTab();
-                        c({ 'otp': null });
-                        return;
+                chrome['tabs']['get'](gmailTabId, function(tab) {
+                    if (tab && tab['status'] === 'complete') {
+                        // Extra 2s after "complete" for Gmail JS to render
+                        setTimeout(proceedToRead, 2000);
+                    } else {
+                        setTimeout(waitForGmailLoad, 1000);
                     }
-                    var gmailTabId = tabs[tabIndex]['id'];
-                    tabIndex++;
+                });
+            }
+            setTimeout(waitForGmailLoad, 1500); // Initial wait before first check
 
-                    // Focus tab to wake it from Chrome throttle
+            function proceedToRead() {
+                // Remember active tab to restore later
+                chrome['tabs']['query']({ 'active': true, 'currentWindow': true }, function(activeTabs) {
+                    var previousTabId = activeTabs && activeTabs[0] ? activeTabs[0]['id'] : null;
+
+                    function restoreTab() {
+                        if (previousTabId && previousTabId !== gmailTabId) {
+                            chrome['tabs']['update'](previousTabId, { 'active': true });
+                        }
+                    }
+
+                    // Focus Gmail tab to ensure it's not throttled
                     chrome['tabs']['update'](gmailTabId, { 'active': true }, function() {
-                        // Wait 1.5s for tab to wake and render
                         setTimeout(function() {
                             chrome['scripting']['executeScript']({
                                 'target': { 'tabId': gmailTabId },
-                                'func': function() {
-                                    // Check open email bodies first
-                                    var openBodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
-                                    for (var el of openBodies) {
-                                        var t = el.textContent || '';
-                                        if (/amazon|verification/i.test(t)) {
-                                            var m = t.match(/\b(\d{6})\b/);
-                                            if (m) return m[1];
+                                'func': function(requestedAtParam) {
+                                    // ── SMART OTP READER ────────────────────────────────
+                                    // Only grab codes from RECENT emails (within last 3 min)
+
+                                    function isRecentEmail(timeText) {
+                                        if (!timeText) return false;
+                                        var t = timeText.trim().toLowerCase();
+                                        // Gmail shows: "just now", "1 min ago", "2 min ago", "10:35 AM", etc.
+                                        if (/just now|moments? ago|now/i.test(t)) return true;
+                                        // "X min ago" — accept if <= 4 min
+                                        var minMatch = t.match(/(\d+)\s*min/);
+                                        if (minMatch && parseInt(minMatch[1]) <= 4) return true;
+                                        // "X sec ago"
+                                        if (/\d+\s*sec/i.test(t)) return true;
+                                        // Absolute time (e.g. "10:35 PM") — check if within last 5 min
+                                        var timeMatch = t.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+                                        if (timeMatch) {
+                                            var h = parseInt(timeMatch[1]);
+                                            var m = parseInt(timeMatch[2]);
+                                            var ampm = (timeMatch[3] || '').toLowerCase();
+                                            if (ampm === 'pm' && h !== 12) h += 12;
+                                            if (ampm === 'am' && h === 12) h = 0;
+                                            var emailTime = new Date();
+                                            emailTime.setHours(h, m, 0, 0);
+                                            var diff = Date.now() - emailTime.getTime();
+                                            // Accept if within last 5 minutes
+                                            if (diff >= 0 && diff < 5 * 60 * 1000) return true;
+                                            // Handle midnight wraparound
+                                            if (diff < -20 * 60 * 60 * 1000) {
+                                                emailTime.setDate(emailTime.getDate() - 1);
+                                                diff = Date.now() - emailTime.getTime();
+                                                if (diff >= 0 && diff < 5 * 60 * 1000) return true;
+                                            }
                                         }
+                                        return false;
                                     }
-                                    // Scan inbox preview snippets
-                                    var bodyText = document.body.innerText || '';
-                                    var lines = bodyText.split('\n');
-                                    for (var i = 0; i < lines.length; i++) {
-                                        if (/amazon.{0,20}(verification|code)/i.test(lines[i])) {
-                                            var chunk = lines.slice(i, i + 5).join(' ');
-                                            var m2 = chunk.match(/\b(\d{6})\b/);
-                                            if (m2) return m2[1];
-                                        }
-                                    }
-                                    // Find and CLICK the Amazon email thread
-                                    var rows = document.querySelectorAll('tr.zA, [data-legacy-thread-id]');
+
+                                    // Method 1: Check inbox rows — find NEWEST Amazon email with recent timestamp
+                                    var rows = document.querySelectorAll('tr.zA, [data-legacy-thread-id], tr[jscontroller]');
                                     for (var row of rows) {
                                         var txt = row.textContent || '';
-                                        if (/amazon.*verification|verification.*amazon|amazon jobs/i.test(txt)) {
-                                            var m3 = txt.match(/\b(\d{6})\b/);
-                                            if (m3) return m3[1];
-                                            row.click();
-                                            return 'CLICKED';
+                                        if (!/amazon.*verif|verif.*amazon|amazon jobs/i.test(txt)) continue;
+
+                                        // Check time label — Gmail shows time in a <span> with title or in .xW
+                                        var timeEl = row.querySelector('.xW span[title], td.xW, [data-tooltip], .bog span');
+                                        var timeText = '';
+                                        if (timeEl) timeText = timeEl.getAttribute('title') || timeEl.textContent || '';
+
+                                        // Also check for relative time spans in the row
+                                        if (!timeText) {
+                                            var spans = row.querySelectorAll('span');
+                                            for (var s of spans) {
+                                                if (/\d+\s*(min|sec|:)\s*(ago|am|pm)?/i.test(s.textContent)) {
+                                                    timeText = s.textContent;
+                                                    break;
+                                                }
+                                            }
                                         }
+
+                                        var recent = isRecentEmail(timeText);
+                                        if (!recent && timeText) continue; // Has time but too old — skip
+                                        // If no time found at all, still try (Gmail might not show time for newest)
+
+                                        // Try to extract code from row snippet
+                                        var m = txt.match(/\b(\d{6})\b/);
+                                        if (m) return { otp: m[1], source: 'inbox-row', time: timeText };
+
+                                        // Need to click to open email
+                                        row.click();
+                                        return { otp: null, source: 'CLICKED', time: timeText };
                                     }
-                                    // Brute force
-                                    var full = bodyText.replace(/\s+/g, ' ');
-                                    var allM = [...full.matchAll(/verification code for Amazon[^\d]*?(\d{6})/gi)];
-                                    if (allM.length > 0) return allM[0][1];
-                                    return null;
-                                }
+
+                                    // Method 2: Check already-open email body
+                                    var openBodies = document.querySelectorAll('.a3s.aiL, .ii.gt .a3s, [data-message-id] .a3s');
+                                    for (var el of openBodies) {
+                                        var bodyTxt = el.textContent || '';
+                                        if (!/amazon|verification/i.test(bodyTxt)) continue;
+                                        var m2 = bodyTxt.match(/\b(\d{6})\b/);
+                                        if (m2) return { otp: m2[1], source: 'open-email' };
+                                    }
+
+                                    return { otp: null, source: 'not-found' };
+                                },
+                                'args': [requestedAt]
                             }, function(results) {
-                                if (chrome['runtime']['lastError']) { tryNextTab(); return; }
+                                if (chrome['runtime']['lastError']) {
+                                    restoreTab();
+                                    c({ 'otp': null });
+                                    return;
+                                }
                                 var result = results && results[0] && results[0]['result'];
 
-                                if (result === 'CLICKED') {
-                                    // Email clicked — wait 2s for render then re-read
+                                if (!result || (!result.otp && result.source !== 'CLICKED')) {
+                                    restoreTab();
+                                    c({ 'otp': null });
+                                    return;
+                                }
+
+                                if (result.source === 'CLICKED') {
+                                    // Email was clicked — wait 2.5s for render then read code
                                     setTimeout(function() {
                                         chrome['scripting']['executeScript']({
                                             'target': { 'tabId': gmailTabId },
@@ -440,32 +519,32 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
                                                         if (m) return m[1];
                                                     }
                                                 }
+                                                // Fallback: any 6-digit number near "verification"
                                                 var full = (document.body.innerText || '').replace(/\s+/g, ' ');
-                                                var m2 = full.match(/Amazon Jobs[^\d]{0,50}(\d{6})/i);
+                                                var m2 = full.match(/verif[^\d]{0,50}(\d{6})/i);
                                                 if (m2) return m2[1];
-                                                var m3 = full.match(/\b(\d{6})\b/);
-                                                return m3 ? m3[1] : null;
+                                                return null;
                                             }
                                         }, function(r2) {
                                             var otp = r2 && r2[0] && r2[0]['result'];
-                                            if (otp) {
-                                                console.log('[bg] OTP after click:', otp);
-                                                restoreTab();
-                                                c({ 'otp': otp });
-                                            } else { tryNextTab(); }
+                                            console.log('[bg] OTP after click:', otp || 'null');
+                                            restoreTab();
+                                            c({ 'otp': otp || null });
                                         });
-                                    }, 2000);
-                                } else if (result && result.length === 6) {
-                                    console.log('[bg] OTP found:', result);
+                                    }, 2500);
+                                } else if (result.otp) {
+                                    console.log('[bg] OTP found (fresh):', result.otp, 'source:', result.source, 'time:', result.time);
                                     restoreTab();
-                                    c({ 'otp': result });
-                                } else { tryNextTab(); }
+                                    c({ 'otp': result.otp });
+                                } else {
+                                    restoreTab();
+                                    c({ 'otp': null });
+                                }
                             });
                         }, 1500);
                     });
-                }
-                tryNextTab();
-            });
+                });
+            }
         });
         return !![];
     }
