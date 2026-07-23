@@ -591,6 +591,7 @@
     // ═══════════════════════════════════════════════════════════════════════════
     var STATE_TIMEOUTS = {
         'LOGIN_PAGE': 20000, 'LOGIN_FILLING': 15000, 'WELCOME_BACK': 5000,
+        'HOMEPAGE': 5000,    // 5s — just need to redirect to login
         'AUTH_VERIFY_TYPE': 15000, 'AUTH_CAPTCHA': 45000, 'AUTH_OTP': 90000,
         'REDIRECT': 15000, 'JOBSEARCH_SCANNING': null,
         'JOB_APPLYING': 30000, 'RELOGIN_BG': 180000, 'IDLE': null
@@ -676,6 +677,10 @@
                 if (isW || hasS) return 'WELCOME_BACK';
                 return 'LOGIN_PAGE';
             }
+            // Homepage (not logged in) — detect by "Find jobs" button or no app# in URL
+            if (!url.includes('app#') && !url.includes('#/login')) {
+                return 'HOMEPAGE';
+            }
             return 'REDIRECT';
         }
         return 'IDLE';
@@ -715,6 +720,23 @@
         logAction('fix', 'Fixing ' + state + ' (action #' + _actionCount + ', age ' + age + 's)');
 
         switch (state) {
+            case 'HOMEPAGE':
+                // On homepage, not logged in — navigate to login page
+                console.log(LOG_PREFIX, '🔧 On homepage (not logged in) — redirecting to login');
+                // Try clicking Sign In button first
+                var signInBtn = document.querySelector('[data-test-id="topPanelSigninLink"]')
+                             || [...document.querySelectorAll('a, button')].find(function(el) {
+                                    return /sign.?in/i.test((el.textContent || '').trim());
+                                });
+                if (signInBtn) {
+                    signInBtn.click();
+                    logAction('fix', 'Clicked Sign In button on homepage');
+                } else {
+                    window.location.href = 'https://auth.hiring.amazon.ca/#/login';
+                    logAction('fix', 'Navigated directly to auth login');
+                }
+                break;
+
             case 'WELCOME_BACK':
                 var els = document.querySelectorAll('button, a');
                 for (var w = 0; w < els.length; w++) {
