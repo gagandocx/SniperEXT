@@ -130,28 +130,36 @@
         var now = Date.now();
         var score = 100;
 
-        // Factor 1: Data freshness (0-40 points)
+        // Factor 1: Data freshness (0-50 points) — MOST IMPORTANT
         var storeEl = document.getElementById('__ss_token_store');
         if (storeEl) {
             var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
             _health.lastIntercept = lastTs;
             var staleness = now - lastTs;
-            if (staleness < 5000) score -= 0;         // Fresh: no penalty
-            else if (staleness < 15000) score -= 10;  // Slightly stale
-            else if (staleness < 30000) score -= 20;  // Getting old
-            else if (staleness < 60000) score -= 30;  // Very stale
-            else score -= 40;                          // Dead
+            if (staleness < 10000) score -= 0;         // < 10s: perfect
+            else if (staleness < 20000) score -= 5;    // 10-20s: fine (normal gap)
+            else if (staleness < 40000) score -= 15;   // 20-40s: slightly stale
+            else if (staleness < 60000) score -= 30;   // 40-60s: concerning
+            else if (staleness < 90000) score -= 40;   // 60-90s: likely dying
+            else score -= 50;                           // 90s+: dead
         } else {
-            score -= 40; // No intercepts at all
+            score -= 50; // No intercepts at all
         }
 
-        // Factor 2: Intercept rate (0-30 points)
+        // Factor 2: Intercept rate (0-20 points)
+        // Amazon's page only calls API when tab toggles or it decides to refresh
+        // Normal operation: 1-5 intercepts per minute is HEALTHY
         _health._interceptTimes = _health._interceptTimes.filter(function(t) { return now - t < 60000; });
         _health.interceptsPerMin = _health._interceptTimes.length;
-        if (_health.interceptsPerMin >= 10) score -= 0;
-        else if (_health.interceptsPerMin >= 5) score -= 5;
-        else if (_health.interceptsPerMin >= 1) score -= 15;
-        else score -= 30;
+        if (_health.interceptsPerMin >= 3) score -= 0;       // 3+/min: great
+        else if (_health.interceptsPerMin >= 1) score -= 5;  // 1-2/min: normal
+        else {
+            // 0 intercepts — but only penalize if we've been scanning > 30s
+            // (first 30s after page load might have 0 naturally)
+            var scanAge = stateAge();
+            if (scanAge > 30000) score -= 20;  // 0/min after 30s: problem
+            else score -= 0;                    // Still warming up
+        }
 
         // Factor 3: Recent errors (0-30 points)
         _health._errorTimes = _health._errorTimes.filter(function(t) { return now - t < 300000; });
