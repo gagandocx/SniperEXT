@@ -940,6 +940,8 @@
     async function D() {
         // Don't scan while any popup is showing
         if (window['_ss_banner_shown'] || window['_ss_guide_showing']) return;
+        // ── GLOBAL HALT: brain ordered full stop (error recovery) ──
+        if (window['__ss_halted']) return;
         // ── Ensure filter values are loaded (fallback to defaults) ────────
         if (typeof l === 'undefined' || l === null) l = 43.653524;
         if (typeof m === 'undefined' || m === null) m = -79.383907;

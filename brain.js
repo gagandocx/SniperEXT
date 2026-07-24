@@ -570,19 +570,32 @@
             _consecutiveStaleChecks = 0;
             _reloginInProgress = true;
             var reason = hasError ? 'page error' : 'stale for ' + Math.round(staleness/1000) + 's';
-            logAction('session', '❌ Session DEAD (' + reason + ') — cooling down 60s then fresh login');
-            brainToast('⏸️ <b style="color:#f59e0b;">Session dead — pausing 60s before fresh login...</b>', 15000);
+            logAction('session', '❌ Session DEAD (' + reason + ') — FULL HALT');
+
+            // FULL HALT — stop ALL extension activity
+            window['__ss_halted'] = true;
+            if (window['b']) { clearInterval(window['b']); window['b'] = null; }
             recordError();
 
             // Close extra tabs
             chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
 
-            // Wait 60 seconds then do a completely fresh login
+            // Escalating wait: 60s first, 2 min on repeat
+            var _haltAttempts2 = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
+            _haltAttempts2++;
+            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts2.toString());
+            var waitTime2 = _haltAttempts2 <= 1 ? 60000 : 120000;
+            var waitLabel2 = _haltAttempts2 <= 1 ? '60s' : '2 min';
+
+            brainToast('⛔ <b style="color:#ef4444;">HALTED — waiting ' + waitLabel2 + ' (attempt #' + _haltAttempts2 + ')</b>', 15000);
+            console.log(LOG_PREFIX, '⛔ FULL HALT — all activity stopped for ' + waitLabel2);
+
             setTimeout(function() {
-                logAction('session', '60s cooldown complete — navigating to fresh login');
+                logAction('session', waitLabel2 + ' halt complete — fresh login');
+                window['__ss_halted'] = false;
                 _reloginInProgress = false;
                 window.location.href = 'https://auth.hiring.amazon.ca/#/login';
-            }, 60000);
+            }, waitTime2);
         }
     }
 
@@ -626,6 +639,8 @@
         if (newState === 'JOBSEARCH_SCANNING') {
             _consecutiveStaleChecks = 0;
             _reloginInProgress = false;
+            window['__ss_halted'] = false; // Clear any halt
+            sessionStorage.removeItem('__ss_halt_attempts'); // Reset escalation
             // Clean up any extra Amazon tabs left over from re-login or errors
             chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }, function(r) {
                 if (r && r.closed > 0) logAction('cleanup', 'Closed ' + r.closed + ' extra Amazon tab(s)');
@@ -853,24 +868,35 @@
 
         var bodyText = (document.body && document.body.innerText) || '';
         if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
-            logAction('health', '"Problem loading page" — cooling down 60s then fresh login');
+            logAction('health', '"Problem loading page" — FULL HALT');
             _lastAction = Date.now();
             _reloginInProgress = true;
             recordError();
 
-            // Close extra tabs first
+            // FULL HALT — stop ALL extension activity
+            window['__ss_halted'] = true;
+            // Kill the scan loop completely
+            if (window['b']) { clearInterval(window['b']); window['b'] = null; }
+
+            // Close extra tabs
             chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
 
-            // STOP everything for 60 seconds — don't spam Amazon
-            brainToast('⏸️ <b style="color:#f59e0b;">Error detected — pausing 60s before fresh login...</b>', 15000);
-            console.log(LOG_PREFIX, '⏸️ Cooling down for 60 seconds...');
+            // Determine wait time: 60s first time, 2 min if already tried once
+            var _haltAttempts = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
+            _haltAttempts++;
+            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts.toString());
+            var waitTime = _haltAttempts <= 1 ? 60000 : 120000; // 60s first, then 2 min
+            var waitLabel = _haltAttempts <= 1 ? '60s' : '2 min';
+
+            brainToast('⏸️ <b style="color:#f59e0b;">HALTED — waiting ' + waitLabel + ' before fresh login...</b>', 15000);
+            console.log(LOG_PREFIX, '⛔ FULL HALT — all activity stopped for ' + waitLabel + ' (attempt #' + _haltAttempts + ')');
 
             setTimeout(function() {
-                logAction('health', '60s cooldown complete — starting fresh login');
+                logAction('health', waitLabel + ' halt complete — starting fresh login');
+                window['__ss_halted'] = false;
                 _reloginInProgress = false;
-                // Navigate directly to auth login for a completely fresh start
                 window.location.href = 'https://auth.hiring.amazon.ca/#/login';
-            }, 60000);
+            }, waitTime);
             return;
         }
 
@@ -935,6 +961,9 @@
     // MAIN LOOP
     // ═══════════════════════════════════════════════════════════════════════════
     function tick() {
+        // ── FULL HALT: do absolutely nothing while halted ──
+        if (window['__ss_halted']) return;
+
         var swalShowing = document.querySelector('.swal2-container.swal2-shown');
         if (swalShowing && !checkSignInPopup()) return;
 
