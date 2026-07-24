@@ -521,7 +521,7 @@
     // If session is alive → do nothing, keep scanning.
     // If session dies → re-login immediately.
     var _lastSessionCheck = 0;
-    var _SESSION_CHECK_INTERVAL = 15000; // Check every 15 seconds
+    var _SESSION_CHECK_INTERVAL = 8000; // Check every 8 seconds (was 15s — faster detection)
     var _consecutiveStaleChecks = 0;
     var _reloginInProgress = false;
 
@@ -861,46 +861,24 @@
     }
 
 
-    // ── Scan Health Check ────────────────────────────────────────────────────
+    // ── Scan Health Check — SMART ADAPTIVE RECOVERY ─────────────────────────
+    // Strategy: minimum downtime. Try quickest fix first, escalate only if needed.
+    // Level 1 (stale 15s): Just click All tab (0s downtime)
+    // Level 2 (stale 30s): Reload page (3s downtime)
+    // Level 3 (stale 60s or error): HALT 15s → fresh login (~30s total)
+    // Level 4 (repeated failures): HALT 30s → fresh login (~45s total)
+    // NEVER halt more than 30s — every second down = missed shifts
     function checkScanHealth() {
         if (_currentState !== 'JOBSEARCH_SCANNING') return;
-        if (_lastAction && (Date.now() - _lastAction < 60000)) return; // 60s cooldown
+        if (window['__ss_halted']) return; // Already halting
+
+        // Cooldown: don't take action within 10s of last action
+        if (_lastAction && (Date.now() - _lastAction < 10000)) return;
 
         var bodyText = (document.body && document.body.innerText) || '';
-        if (/problem loading page|server didn't respond|try refreshing/i.test(bodyText)) {
-            logAction('health', '"Problem loading page" — FULL HALT');
-            _lastAction = Date.now();
-            _reloginInProgress = true;
-            recordError();
+        var hasPageError = /problem loading page|server didn't respond|try refreshing/i.test(bodyText);
 
-            // FULL HALT — stop ALL extension activity
-            window['__ss_halted'] = true;
-            // Kill the scan loop completely
-            if (window['b']) { clearInterval(window['b']); window['b'] = null; }
-
-            // Close extra tabs
-            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
-
-            // Determine wait time: 60s first time, 2 min if already tried once
-            var _haltAttempts = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
-            _haltAttempts++;
-            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts.toString());
-            var waitTime = _haltAttempts <= 1 ? 60000 : 120000; // 60s first, then 2 min
-            var waitLabel = _haltAttempts <= 1 ? '60s' : '2 min';
-
-            brainToast('⏸️ <b style="color:#f59e0b;">HALTED — waiting ' + waitLabel + ' before fresh login...</b>', 15000);
-            console.log(LOG_PREFIX, '⛔ FULL HALT — all activity stopped for ' + waitLabel + ' (attempt #' + _haltAttempts + ')');
-
-            setTimeout(function() {
-                logAction('health', waitLabel + ' halt complete — starting fresh login');
-                window['__ss_halted'] = false;
-                _reloginInProgress = false;
-                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
-            }, waitTime);
-            return;
-        }
-
-        // Ensure "All" tab selected
+        // Ensure "All" tab selected (instant, no downtime)
         var allTab = null, recTab = null;
         var btns = document.querySelectorAll('button');
         for (var i = 0; i < btns.length; i++) {
@@ -915,26 +893,58 @@
         var storeEl = document.getElementById('__ss_token_store');
         if (!storeEl) return;
         var lastTs = parseInt(storeEl.getAttribute('data-ts') || '0');
-        var staleness = Date.now() - lastTs;
+        var staleness = lastTs > 0 ? (Date.now() - lastTs) : 999999;
 
-        if (lastTs > 0 && staleness > 90000) {
-            logAction('health', 'Stale ' + Math.round(staleness/1000) + 's — re-logging in');
+        // ── LEVEL 1: Stale 15-30s → just click All (0s downtime) ──
+        if (!hasPageError && staleness > 15000 && staleness <= 30000) {
+            logAction('health', 'L1: Stale ' + Math.round(staleness/1000) + 's — clicking All');
             _lastAction = Date.now();
-            recordError();
-            chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-            brainToast('🔄 <b style="color:#f59e0b;">Data stale — refreshing session...</b>', 8000);
-            setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+            if (allTab) allTab.click();
             return;
         }
 
-        if (lastTs > 0 && staleness > 30000) {
-            logAction('health', 'Stale ' + Math.round(staleness/1000) + 's — tab toggle');
+        // ── LEVEL 2: Stale 30-60s → reload page (3s downtime) ──
+        if (!hasPageError && staleness > 30000 && staleness <= 60000) {
+            logAction('health', 'L2: Stale ' + Math.round(staleness/1000) + 's — reloading page');
             _lastAction = Date.now();
-            if (recTab && allTab) { recTab.click(); setTimeout(function() { allTab.click(); }, 1000); }
-            else if (allTab) allTab.click();
+            window.location.href = 'https://hiring.amazon.ca/app#/jobSearch';
+            return;
         }
 
-        if (lastTs === 0 && stateAge() > 15000) {
+        // ── LEVEL 3: Stale 60s+ OR page error → HALT 15s then fresh login ──
+        if (hasPageError || staleness > 60000) {
+            var _haltAttempts = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
+            _haltAttempts++;
+            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts.toString());
+
+            // Smart halt time: 15s first, 30s on repeat. NEVER more than 30s.
+            var haltTime = _haltAttempts <= 1 ? 15000 : 30000;
+            var haltLabel = _haltAttempts <= 1 ? '15s' : '30s';
+
+            logAction('health', 'L' + (2 + _haltAttempts) + ': ' + (hasPageError ? 'Page error' : 'Stale ' + Math.round(staleness/1000) + 's') + ' — HALT ' + haltLabel + ' (attempt #' + _haltAttempts + ')');
+            _lastAction = Date.now();
+            _reloginInProgress = true;
+            recordError();
+
+            // HALT
+            window['__ss_halted'] = true;
+            if (window['b']) { clearInterval(window['b']); window['b'] = null; }
+            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
+
+            brainToast('⏸️ <b style="color:#f59e0b;">Halt ' + haltLabel + ' → then fresh login (attempt #' + _haltAttempts + ')</b>', haltTime);
+            console.log(LOG_PREFIX, '⛔ HALT for ' + haltLabel + ' then fresh login');
+
+            setTimeout(function() {
+                window['__ss_halted'] = false;
+                _reloginInProgress = false;
+                logAction('health', 'Halt done — fresh login NOW');
+                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
+            }, haltTime);
+            return;
+        }
+
+        // ── No intercepts ever after 10s → click All ──
+        if (lastTs === 0 && stateAge() > 10000) {
             _lastAction = Date.now();
             if (allTab) allTab.click();
         }
