@@ -1,14 +1,19 @@
-// ── ShiftSniper MAIN World — Response Interceptor + Page Refresh ─────────────
-// v8.9.1.0 — FIXED: Use Object.defineProperty to intercept ALL fetch calls
+// ═══════════════════════════════════════════════════════════════════════════════
+// ShiftSniper HYPER INTERCEPTOR v8.9.7.5
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRATEGY: Two-pronged attack for MAXIMUM speed (2-second cycle)
 //
-// Previous versions patched window.fetch directly, but Amazon's React app
-// saves its own reference to fetch at module load time (before our patch).
-// 37 GraphQL calls returned 200 but we never saw them!
+//   PRONG 1 — PASSIVE: Intercept Response.prototype.json() and .text()
+//             Catches ANY response from Amazon's own code (0ms delay)
 //
-// FIX: Use Object.defineProperty with getter/setter so ANY access to
-// window.fetch goes through our proxy — even cached references.
-// Also add a Response prototype patch as backup.
-// ─────────────────────────────────────────────────────────────────────────────
+//   PRONG 2 — ACTIVE: Steal Amazon's auth headers from their outgoing fetch,
+//             then make our OWN direct GraphQL calls every 2 seconds.
+//             If WAF blocks us (403), fall back to clicking "All" tab.
+//
+// This means we get data from BOTH:
+//   - Amazon's own periodic calls (passive — free, no risk)
+//   - Our own injected calls (active — 2s guaranteed freshness)
+// ═══════════════════════════════════════════════════════════════════════════════
 (function() {
     'use strict';
 
@@ -18,195 +23,189 @@
     var _jobsFoundCount = 0;
     var _interceptCount = 0;
 
-    // ── Method 1: Patch Response.prototype.json to intercept ALL responses ───
-    // This works regardless of HOW fetch was called or which reference was used
+    // ── Stolen auth context from Amazon's own requests ───────────────────────
+    var _stolenHeaders = null;
+    var _stolenEndpoint = null;
+    var _stolenAt = 0;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRONG 1: Passive interception (same as before — catches Amazon's own calls)
+    // ═══════════════════════════════════════════════════════════════════════════
     var _origJson = Response.prototype.json;
     Response.prototype.json = function() {
         var resp = this;
         var result = _origJson.call(this);
-
-        // Check if this response is from the GraphQL endpoint
         if (resp.url && (resp.url.indexOf('appsync') !== -1 || resp.url.indexOf('graphql') !== -1)) {
             result.then(function(data) {
-                _interceptCount++;
-                if (data && data.data && data.data.searchJobCardsByLocation) {
-                    var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
-                    _lastJobData = jobCards;
-                    _lastJobDataTs = Date.now();
-                    _jobsFoundCount = jobCards.length;
-
-                    // Store proof of interception
-                    var el = document.getElementById('__ss_token_store');
-                    if (!el) {
-                        el = document.createElement('div');
-                        el.id = '__ss_token_store';
-                        el.style.display = 'none';
-                        document.documentElement.appendChild(el);
-                    }
-                    el.setAttribute('data-jobs', jobCards.length.toString());
-                    el.setAttribute('data-ts', Date.now().toString());
-                    el.setAttribute('data-intercepts', _interceptCount.toString());
-
-                    if (jobCards.length > 0) {
-                        console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
-                    }
-
-                    // Notify content script
-                    document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
-                        detail: { jobCards: jobCards, timestamp: Date.now() }
-                    }));
-                }
-                if (data && data.data && data.data.searchScheduleCards) {
-                    document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
-                        detail: { scheduleCards: data.data.searchScheduleCards.scheduleCards || [], timestamp: Date.now() }
-                    }));
-                }
+                _processInterceptedData(data);
             }).catch(function() {});
         }
-
         return result;
     };
 
-    // ── Method 2: Also patch text() for cases where json() isn't used ────────
     var _origText = Response.prototype.text;
     Response.prototype.text = function() {
         var resp = this;
         var result = _origText.call(this);
-
         if (resp.url && (resp.url.indexOf('appsync') !== -1 || resp.url.indexOf('graphql') !== -1)) {
             result.then(function(text) {
-                try {
-                    var data = JSON.parse(text);
-                    _interceptCount++;
-                    if (data && data.data && data.data.searchJobCardsByLocation) {
-                        var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
-                        _lastJobData = jobCards;
-                        _lastJobDataTs = Date.now();
-                        _jobsFoundCount = jobCards.length;
-
-                        // Store proof
-                        var el = document.getElementById('__ss_token_store');
-                        if (!el) {
-                            el = document.createElement('div');
-                            el.id = '__ss_token_store';
-                            el.style.display = 'none';
-                            document.documentElement.appendChild(el);
-                        }
-                        el.setAttribute('data-jobs', jobCards.length.toString());
-                        el.setAttribute('data-ts', Date.now().toString());
-                        el.setAttribute('data-intercepts', _interceptCount.toString());
-
-                        if (jobCards.length > 0) {
-                            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
-                        }
-
-                        document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
-                            detail: { jobCards: jobCards, timestamp: Date.now() }
-                        }));
-                    }
-                    if (data && data.data && data.data.searchScheduleCards) {
-                        document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
-                            detail: { scheduleCards: data.data.searchScheduleCards.scheduleCards || [], timestamp: Date.now() }
-                        }));
-                    }
-                } catch(e) {}
+                try { _processInterceptedData(JSON.parse(text)); } catch(e) {}
             }).catch(function() {});
         }
-
         return result;
     };
 
-    // ── Handle API requests from content script ──────────────────────────────
+    function _processInterceptedData(data) {
+        _interceptCount++;
+        if (data && data.data && data.data.searchJobCardsByLocation) {
+            var jobCards = data.data.searchJobCardsByLocation.jobCards || [];
+            _lastJobData = jobCards;
+            _lastJobDataTs = Date.now();
+            _jobsFoundCount = jobCards.length;
+            _updateStore(jobCards.length);
+            if (jobCards.length > 0) {
+                console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
+                document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
+                    detail: { jobCards: jobCards, timestamp: Date.now() }
+                }));
+            }
+        }
+        if (data && data.data && data.data.searchScheduleCards) {
+            document.dispatchEvent(new CustomEvent('__ss_schedules_found', {
+                detail: { scheduleCards: data.data.searchScheduleCards.scheduleCards || [], timestamp: Date.now() }
+            }));
+        }
+    }
+
+    function _updateStore(jobCount) {
+        var el = document.getElementById('__ss_token_store');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = '__ss_token_store';
+            el.style.display = 'none';
+            document.documentElement.appendChild(el);
+        }
+        el.setAttribute('data-jobs', jobCount.toString());
+        el.setAttribute('data-ts', Date.now().toString());
+        el.setAttribute('data-intercepts', _interceptCount.toString());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HEADER THEFT: Capture Amazon's auth headers from their own fetch calls
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _origFetch = window.fetch;
+    window.fetch = function(input, init) {
+        var url = (typeof input === 'string') ? input : (input && input.url) || '';
+        if (url.indexOf('appsync') !== -1 || url.indexOf('graphql') !== -1) {
+            if (init && init.headers) {
+                _stolenHeaders = {};
+                // Copy headers (could be Headers object or plain object)
+                if (init.headers instanceof Headers) {
+                    init.headers.forEach(function(val, key) { _stolenHeaders[key] = val; });
+                } else {
+                    for (var k in init.headers) { _stolenHeaders[k] = init.headers[k]; }
+                }
+                _stolenEndpoint = url;
+                _stolenAt = Date.now();
+            }
+        }
+        return _origFetch.apply(this, arguments);
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRONG 2: Active polling — our own GraphQL calls every 2 seconds
+    // ═══════════════════════════════════════════════════════════════════════════
+    var _activeInterval = null;
+    var _activeFails = 0;
+    var _useActivePoll = true; // switches to false if WAF blocks us
+
+    function _buildQuery() {
+        var today = new Date().toISOString().split('T')[0];
+        return JSON.stringify({
+            operationName: 'searchJobCardsByLocation',
+            variables: { searchJobRequest: {
+                locale: 'en-CA', country: 'Canada', keyWords: '',
+                equalFilters: [], containFilters: [{ key: 'isPrivateSchedule', val: ['false'] }],
+                rangeFilters: [{ key: 'hoursPerWeek', range: { minimum: 0, maximum: 80 } }],
+                dateFilters: [{ key: 'firstDayOnSite', range: { startDate: today } }],
+                excludeFilters: [], orFilters: [], sorters: [], pageSize: 100,
+                geoQueryClause: { lat: 43.653524, lng: -79.383907, unit: 'km', distance: 200 },
+                consolidateSchedule: true
+            }},
+            query: 'query searchJobCardsByLocation($searchJobRequest: SearchJobRequest!) { searchJobCardsByLocation(searchJobRequest: $searchJobRequest) { nextToken jobCards { jobId language dataSource requisitionType jobTitle jobType employmentType city state postalCode locationName totalPayRateMin totalPayRateMax tagLine bannerText image distance featuredJob bonusJob bonusPay scheduleCount currencyCode geoClusterDescription surgePay jobTypeL10N employmentTypeL10N totalPayRateMinL10N totalPayRateMaxL10N distanceL10N monthlyBasePayMin monthlyBasePayMinL10N monthlyBasePayMax monthlyBasePayMaxL10N virtualLocation poolingEnabled } } }'
+        });
+    }
+
+    async function _activePoll() {
+        if (window['__ss_halted']) return;
+
+        // If we don't have stolen headers OR they're expired (>5 min), use fallback
+        if (!_stolenHeaders || !_stolenEndpoint || (Date.now() - _stolenAt > 300000)) {
+            _fallbackRefresh();
+            return;
+        }
+
+        // If active polling failed 3+ times, switch to fallback mode for 30s
+        if (!_useActivePoll) return;
+
+        try {
+            var resp = await _realFetch(_stolenEndpoint, {
+                method: 'POST',
+                headers: _stolenHeaders,
+                body: _buildQuery()
+            });
+
+            if (resp.ok) {
+                var data = await resp.json();
+                _activeFails = 0;
+                _processInterceptedData(data);
+            } else if (resp.status === 403 || resp.status === 401) {
+                _activeFails++;
+                if (_activeFails >= 3) {
+                    // WAF is blocking — fall back to tab clicking for 30s
+                    console.log('[SS] Active poll blocked (403) — falling back to tab click for 30s');
+                    _useActivePoll = false;
+                    _stolenHeaders = null;
+                    setTimeout(function() { _useActivePoll = true; _activeFails = 0; }, 30000);
+                }
+                _fallbackRefresh();
+            }
+        } catch(e) {
+            _activeFails++;
+            _fallbackRefresh();
+        }
+    }
+
+    // Fallback: click "All" tab to force Amazon to make its own call
+    function _fallbackRefresh() {
+        try {
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].textContent.trim() === 'All') { btns[i].click(); return; }
+            }
+        } catch(e) {}
+    }
+
+    // Start the 2-second active poll
+    setTimeout(function() {
+        _activeInterval = setInterval(_activePoll, 2000);
+        console.log('[SS] ⚡ Active polling started (every 2s)');
+    }, 3000);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Handle requests from content script (fetch.js)
+    // ═══════════════════════════════════════════════════════════════════════════
     document.addEventListener('__ss_api_request', function(evt) {
         var detail = evt.detail || {};
         if (!detail.requestId) return;
-
-        // Return intercepted data if fresh (< 4s — matches scan interval)
-        if (_lastJobData !== null && (Date.now() - _lastJobDataTs < 4000)) {
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: {
-                    requestId: detail.requestId, ok: true, status: 200,
-                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData, nextToken: null } } }
-                }
-            }));
-        } else {
-            // Stale — trigger refresh and return what we have
-            _triggerRefresh();
-            document.dispatchEvent(new CustomEvent('__ss_api_response', {
-                detail: {
-                    requestId: detail.requestId, ok: true, status: 200,
-                    data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
-                }
-            }));
-        }
+        // Always return latest data (active poll keeps it fresh)
+        document.dispatchEvent(new CustomEvent('__ss_api_response', {
+            detail: {
+                requestId: detail.requestId, ok: true, status: 200,
+                data: { data: { searchJobCardsByLocation: { jobCards: _lastJobData || [], nextToken: null } } }
+            }
+        }));
     });
 
-    // ── Trigger page refresh ─────────────────────────────────────────────────
-    var _lastRefreshTs = 0;
-    var _refreshCount = 0;
-
-    function _triggerRefresh() {
-        if (Date.now() - _lastRefreshTs < 1000) return;
-        _lastRefreshTs = Date.now();
-        _refreshCount++;
-
-        // v8.9.5.5: ALWAYS use tab toggle — URL manipulation breaks Amazon's SPA
-        // (appending ?r=timestamp causes 400 Bad Request errors)
-        try {
-            var btns = document.querySelectorAll('button');
-            var recTab = null, allTab = null;
-            for (var i = 0; i < btns.length; i++) {
-                var txt = btns[i].textContent.trim();
-                if (txt === 'Recommended') recTab = btns[i];
-                if (txt === 'All') allTab = btns[i];
-            }
-            if (recTab && allTab) {
-                recTab.click();
-                setTimeout(function() { allTab.click(); }, 800);
-                return;
-            }
-            // If only "All" tab exists (already selected), click it to force re-fetch
-            if (allTab) {
-                allTab.click();
-                return;
-            }
-        } catch(e) {}
-
-        // Last resort: scroll to trigger lazy-load (NOT URL change)
-        try {
-            window.scrollBy(0, 1);
-            setTimeout(function() { window.scrollBy(0, -1); }, 300);
-        } catch(e) {}
-    }
-
-    // ── Auto-refresh loop: ensures Amazon keeps making API calls ────────────
-    // In background mode (minimized window), the page might stop making calls.
-    // This forces a tab toggle every N seconds to keep data flowing.
-    var _autoRefreshInterval = null;
-
-    function startAutoRefresh() {
-        if (_autoRefreshInterval) return;
-        // Read scan interval from storage, default 3s
-        var interval = 3000;
-        try {
-            var el = document.getElementById('__ss_token_store');
-            if (el && el.getAttribute('data-interval')) {
-                interval = parseInt(el.getAttribute('data-interval')) || 3000;
-            }
-        } catch(e) {}
-
-        // Every interval: if data is stale, force tab toggle
-        _autoRefreshInterval = setInterval(function() {
-            var staleness = Date.now() - _lastJobDataTs;
-            // Only refresh if data is older than the interval (stale)
-            if (staleness > Math.max(interval, 3000)) {
-                _triggerRefresh();
-            }
-        }, Math.max(interval, 2000));
-    }
-
-    // Start auto-refresh after 5s (let page settle)
-    setTimeout(startAutoRefresh, 5000);
-
-    console.log('[SS] v8.9.6.2 ready — Response.prototype interceptor + auto-refresh active');
+    console.log('[SS] v8.9.7.5 HYPER MODE ready — passive intercept + active 2s poll');
 })();
