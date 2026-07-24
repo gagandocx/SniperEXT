@@ -1066,6 +1066,48 @@
         }
     };
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DOM BRIDGE — Expose brain status to page context (MAIN world)
+    // So user can check brain from normal console without switching context
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _updateBrainBridge() {
+        var el = document.getElementById('__ss_brain_status');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = '__ss_brain_status';
+            el.style.display = 'none';
+            document.documentElement.appendChild(el);
+        }
+        el.setAttribute('data-state', _currentState);
+        el.setAttribute('data-health', _health.score.toString());
+        el.setAttribute('data-age', Math.round(stateAge() / 1000).toString());
+        el.setAttribute('data-actions', _actionCount.toString());
+        el.setAttribute('data-halted', (!!window['__ss_halted']).toString());
+        el.setAttribute('data-ts', Date.now().toString());
+    }
+    // Update bridge every tick
+    setInterval(_updateBrainBridge, 4000);
+
+    // Also inject a page-level script that reads the bridge
+    var _bridgeScript = document.createElement('script');
+    _bridgeScript.textContent = '(' + function() {
+        window.__ss_brain = {
+            status: function() {
+                var el = document.getElementById("__ss_brain_status");
+                if (!el) return "Brain DOM bridge not found — brain may not be loaded";
+                return {
+                    state: el.getAttribute("data-state"),
+                    health: el.getAttribute("data-health") + "/100",
+                    age: el.getAttribute("data-age") + "s",
+                    actions: el.getAttribute("data-actions"),
+                    halted: el.getAttribute("data-halted"),
+                    lastUpdate: Math.round((Date.now() - parseInt(el.getAttribute("data-ts") || "0")) / 1000) + "s ago"
+                };
+            }
+        };
+    }.toString() + ')();';
+    document.documentElement.appendChild(_bridgeScript);
+
     } catch(e) {
         console.error('[brain] FATAL ERROR during initialization:', e.message, e.stack);
     }
