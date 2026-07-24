@@ -9,7 +9,7 @@ set "BASE_DIR=F:\Automation\Amazon\Sniper\Unlocked\Updatedv1"
 set "REPO=gagandocx/SniperEXT"
 set "BRANCH=fix/auth-token-capture"
 set "DOWNLOAD_URL=https://github.com/%REPO%/archive/refs/heads/%BRANCH%.zip"
-set "TEMP_ZIP=%TEMP%\SniperEXT_latest.zip"
+set "TEMP_ZIP=%TEMP%\SniperEXT_%RANDOM%.zip"
 set "TEMP_EXTRACT=%TEMP%\SniperEXT_extract"
 
 echo.
