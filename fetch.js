@@ -151,18 +151,17 @@
     });
 
     // ── Listen for job data intercepted from Amazon's own API calls ─────────
-    var _jobFoundLock = false; // Prevent multiple G() calls for same shift
+    var _jobFoundLock = false; // Not used as timer lock anymore — just prevents race conditions
     var _lastFoundJobIds = []; // Track which jobs we already opened tabs for
     document.addEventListener('__ss_jobs_found', function(evt) {
         var detail = evt.detail || {};
         var jobCards = detail.jobCards || [];
-        if (jobCards.length > 0 && p && !_jobFoundLock) {
+        if (jobCards.length > 0 && p) {
             // Filter out jobs we already opened tabs for
             var newJobs = jobCards.filter(function(j) { return _lastFoundJobIds.indexOf(j.jobId) === -1; });
             if (newJobs.length === 0) return; // All jobs already handled
 
-            _jobFoundLock = true;
-            console.log('[SS] 🎯 ' + newJobs.length + ' NEW JOBS — processing! (locked)');
+            console.log('[SS] 🎯 ' + newJobs.length + ' NEW JOBS found!');
 
             // Track these job IDs so we don't open duplicate tabs
             newJobs.forEach(function(j) { _lastFoundJobIds.push(j.jobId); });
@@ -1377,12 +1376,9 @@
         if (U) {
             const a2 = y(i), a3 = 'https://' + a2['domain'] + '/app#/jobDetail?jobId=' + U['jobId'] + '&locale=' + a2['locale'];
             // v8.9.8.6: Open job in NEW TAB — main tab keeps scanning
-            // Never navigate the main scanning tab away from jobSearch
             console.log('[fetch.js] Opening shift in new tab:', a3);
             window.open(a3, '_blank');
-            // DON'T call H() here — H() runs on the jobDetail page itself via content script
-            // Main tab continues scanning — reset the lock after 10s to catch next shift
-            setTimeout(function() { _jobFoundLock = false; }, 10000);
+            // No lock needed — _lastFoundJobIds prevents duplicates
         } else
             if (!b) _startScan();
     }
@@ -1536,8 +1532,18 @@
     chrome['runtime']['onMessage']['addListener'](function (O, P, Q) {
         if (O['action'] == 'activate') {
             p = O['status'];
-            if (p)
+            if (p) {
+                // Turning ON — start everything
+                window['__ss_halted'] = false;
                 C();
+            } else {
+                // Turning OFF — STOP EVERYTHING completely
+                console.log('[fetch.js] ⛔ Hunter DEACTIVATED — stopping all activity');
+                window['__ss_halted'] = true; // Stops HYPER MODE + brain
+                if (b) { clearInterval(b); b = null; } // Stop scan loop
+                _hideRing(); // Hide scan ring
+                _jobFoundLock = false; // Reset locks
+            }
         }
         Q(!![]);
     });
@@ -1563,8 +1569,9 @@
     // started (b is still null), restart L(). This catches cases where L()
     // was interrupted by navigation timing or the activate message was missed.
     setInterval(function() {
-        // Do NOT restart if any popup is showing
+        // Do NOT restart if any popup is showing or halted
         if (window['_ss_banner_shown'] || window['_ss_guide_showing'] || window['_ss_polling'] || window['_ss_blk_showing']) return;
+        if (window['__ss_halted']) return; // Respect halt (deactivated or error recovery)
         if (p && F() && !b && !window['_candidateIDFetching']) {
             console.log('[fetch.js] Recovery watchdog: restarting loop');
             L();
