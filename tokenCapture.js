@@ -64,7 +64,9 @@
             _jobsFoundCount = jobCards.length;
             _updateStore(jobCards.length);
             if (jobCards.length > 0) {
-                console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND!');
+                console.log('[SS] 🎯 ' + jobCards.length + ' JOBS FOUND! — STOPPING active poll');
+                // STOP active polling immediately — let fetch.js handle the apply
+                if (_activeInterval) { clearInterval(_activeInterval); _activeInterval = null; }
                 document.dispatchEvent(new CustomEvent('__ss_jobs_found', {
                     detail: { jobCards: jobCards, timestamp: Date.now() }
                 }));

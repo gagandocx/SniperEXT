@@ -151,11 +151,13 @@
     });
 
     // ── Listen for job data intercepted from Amazon's own API calls ─────────
+    var _jobFoundLock = false; // Prevent multiple G() calls for same shift
     document.addEventListener('__ss_jobs_found', function(evt) {
         var detail = evt.detail || {};
         var jobCards = detail.jobCards || [];
-        if (jobCards.length > 0 && p) {
-            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS — processing!');
+        if (jobCards.length > 0 && p && !_jobFoundLock) {
+            _jobFoundLock = true; // LOCK — only process ONCE
+            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS — processing! (locked)');
             G(jobCards);
         }
     });
