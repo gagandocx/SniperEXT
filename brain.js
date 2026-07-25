@@ -857,6 +857,17 @@
         // Cooldown: don't take action within 10s of last action
         if (_lastAction && (Date.now() - _lastAction < 10000)) return;
 
+        // ── DON'T halt if jobs were recently found (user might be applying) ──
+        var _storeCheck = document.getElementById('__ss_token_store');
+        if (_storeCheck) {
+            var _lastJobs = parseInt(_storeCheck.getAttribute('data-jobs') || '0');
+            var _lastJobTs = parseInt(_storeCheck.getAttribute('data-ts') || '0');
+            // Jobs found in last 5 minutes → user is applying, don't interfere
+            if (_lastJobs > 0 && (Date.now() - _lastJobTs) < 300000) {
+                return;
+            }
+        }
+
         var bodyText = (document.body && document.body.innerText) || '';
         var hasPageError = /problem loading page|server didn't respond|try refreshing/i.test(bodyText);
 

@@ -240,18 +240,24 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return true;
     }
 
-    // ── Clean Slate: Close ALL Amazon tabs → wait → open fresh tab ─────────────
+    // ── Clean Slate: Close ONLY scanning tabs → wait → open fresh tab ──────────
+    // NEVER closes jobDetail or application tabs (user might be applying)
     if (a['action'] === 'cleanSlateRestart') {
         (async function() {
             try {
-                // Close ALL Amazon/hiring tabs
                 var allTabs = await new Promise(function(res) { chrome.tabs.query({}, res); });
-                var amazonTabs = allTabs.filter(function(t) {
-                    return t.url && (t.url.includes('hiring.amazon') || t.url.includes('auth.hiring.amazon'));
+                // Only close jobSearch/homepage/auth tabs — NOT jobDetail or application tabs
+                var tabsToClose = allTabs.filter(function(t) {
+                    if (!t.url) return false;
+                    if (!t.url.includes('hiring.amazon') && !t.url.includes('auth.hiring.amazon')) return false;
+                    // KEEP these tabs alive (user applying)
+                    if (t.url.includes('jobDetail')) return false;
+                    if (t.url.includes('/application/')) return false;
+                    return true; // Close: jobSearch, homepage, auth pages
                 });
-                console.log('[bg] Clean slate: closing', amazonTabs.length, 'Amazon tabs');
-                for (var i = 0; i < amazonTabs.length; i++) {
-                    chrome.tabs.remove(amazonTabs[i].id, function() {});
+                console.log('[bg] Clean slate: closing', tabsToClose.length, 'scanning tabs (keeping apply tabs)');
+                for (var i = 0; i < tabsToClose.length; i++) {
+                    chrome.tabs.remove(tabsToClose[i].id, function() {});
                 }
 
                 // Wait 30 seconds
@@ -261,7 +267,7 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
                 // Open a brand new Amazon hiring tab
                 console.log('[bg] Clean slate: opening fresh tab');
                 chrome.tabs.create({ url: 'https://hiring.amazon.ca/app#/jobSearch' });
-                c({ success: true, closed: amazonTabs.length });
+                c({ success: true, closed: tabsToClose.length });
             } catch(err) {
                 console.error('[bg] cleanSlateRestart error:', err);
                 c({ error: err.message });
