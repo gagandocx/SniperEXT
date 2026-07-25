@@ -231,6 +231,15 @@ chrome['runtime']['onConnect']['addListener'](function (a) {
         return true;
     }
 
+    // ── Open tab in background (doesn't steal focus) ───────────────────────────
+    if (a['action'] === 'openBackgroundTab') {
+        chrome.tabs.create({ url: a.url, active: false }, function(tab) {
+            console.log('[bg] Opened background tab:', a.url, 'id:', tab && tab.id);
+        });
+        c({ done: true });
+        return true;
+    }
+
     // ── Clean Slate: Close ALL Amazon tabs → wait → open fresh tab ─────────────
     if (a['action'] === 'cleanSlateRestart') {
         (async function() {

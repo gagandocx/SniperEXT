@@ -1375,9 +1375,9 @@
         }
         if (U) {
             const a2 = y(i), a3 = 'https://' + a2['domain'] + '/app#/jobDetail?jobId=' + U['jobId'] + '&locale=' + a2['locale'];
-            // v8.9.8.6: Open job in NEW TAB — main tab keeps scanning
-            console.log('[fetch.js] Opening shift in new tab:', a3);
-            window.open(a3, '_blank');
+            // Open job in BACKGROUND tab — doesn't steal focus from user
+            console.log('[fetch.js] Opening shift in background tab:', a3);
+            chrome.runtime.sendMessage({ action: 'openBackgroundTab', url: a3 });
             // No lock needed — _lastFoundJobIds prevents duplicates
         } else
             if (!b) _startScan();
