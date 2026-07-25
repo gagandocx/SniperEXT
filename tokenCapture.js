@@ -219,7 +219,29 @@
     document.addEventListener('__ss_api_request', function(evt) {
         var detail = evt.detail || {};
         if (!detail.requestId) return;
-        // Always return latest data (active poll keeps it fresh)
+
+        // Check if this is a schedule request (has body with searchScheduleCards)
+        var isScheduleReq = detail.body && detail.body.indexOf('searchScheduleCards') !== -1;
+
+        if (isScheduleReq && _stolenHeaders && _stolenEndpoint) {
+            // Forward schedule request using stolen headers
+            _realFetch(_stolenEndpoint, {
+                method: 'POST',
+                headers: _stolenHeaders,
+                body: detail.body
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                    detail: { requestId: detail.requestId, ok: true, status: 200, data: data }
+                }));
+            }).catch(function() {
+                document.dispatchEvent(new CustomEvent('__ss_api_response', {
+                    detail: { requestId: detail.requestId, ok: true, status: 200, data: { data: { searchScheduleCards: { scheduleCards: [] } } } }
+                }));
+            });
+            return;
+        }
+
+        // Job search request — return cached data
         document.dispatchEvent(new CustomEvent('__ss_api_response', {
             detail: {
                 requestId: detail.requestId, ok: true, status: 200,
