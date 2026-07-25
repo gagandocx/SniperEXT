@@ -966,6 +966,10 @@
         // ── FULL HALT: do absolutely nothing while halted ──
         if (window['__ss_halted']) return;
 
+        // ── Don't interfere on jobDetail/application pages (apply flow in progress) ──
+        var _tickUrl = window.location.href;
+        if (_tickUrl.includes('jobDetail') || _tickUrl.includes('/application/')) return;
+
         var swalShowing = document.querySelector('.swal2-container.swal2-shown');
         if (swalShowing && !checkSignInPopup()) return;
 

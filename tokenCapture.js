@@ -201,10 +201,16 @@
         } catch(e) {}
     }
 
-    // Start the 2-second active poll
+    // Start the 2-second active poll — ONLY on jobSearch page
+    // Don't poll on jobDetail or application pages (interferes with apply flow)
     setTimeout(function() {
-        _activeInterval = setInterval(_activePoll, 2000);
-        console.log('[SS] ⚡ Active polling started (every 2s)');
+        var url = window.location.href;
+        if (url.includes('app#/jobSearch') || (url.includes('/app') && !url.includes('jobDetail') && !url.includes('application'))) {
+            _activeInterval = setInterval(_activePoll, 2000);
+            console.log('[SS] ⚡ Active polling started (every 2s) — jobSearch only');
+        } else {
+            console.log('[SS] ℹ️ NOT polling — on apply/detail page');
+        }
     }, 3000);
 
     // ═══════════════════════════════════════════════════════════════════════════
