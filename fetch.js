@@ -983,6 +983,16 @@
                 console.log('[SS] Config: City=' + k + ' Lat=' + l + ' Lng=' + m + ' Dist=' + n + ' Type=' + o + ' Country=' + i);
             }
             // ── Sync search settings to DOM for HYPER MODE (tokenCapture.js reads these) ──
+            // When "Any City" / no specific region: use center of Canada + max radius
+            var _syncLat = l || 43.653524;
+            var _syncLng = m || -79.383907;
+            var _syncDist = parseInt(n) || 200;
+            // If region is "Any" or no specific city → use center of Canada + 5000km (covers entire country)
+            if (!k || k === 'Any City' || k === 'Any' || k === 'Toronto' && !l) {
+                _syncLat = 56.1304;   // Center of Canada (geographic)
+                _syncLng = -106.3468;
+                _syncDist = 5000;     // 5000km radius = entire Canada
+            }
             (function() {
                 var _el = document.getElementById('__ss_token_store');
                 if (!_el) {
@@ -991,9 +1001,9 @@
                     _el.style.display = 'none';
                     document.documentElement.appendChild(_el);
                 }
-                _el.setAttribute('data-lat', (l || 43.653524).toString());
-                _el.setAttribute('data-lng', (m || -79.383907).toString());
-                _el.setAttribute('data-dist', (n || 200).toString());
+                _el.setAttribute('data-lat', _syncLat.toString());
+                _el.setAttribute('data-lng', _syncLng.toString());
+                _el.setAttribute('data-dist', _syncDist.toString());
                 _el.setAttribute('data-country', i || 'Canada');
                 _el.setAttribute('data-locale', i === 'United States' ? 'en-US' : 'en-CA');
             })();
@@ -1032,10 +1042,10 @@
                             'sorters': [],
                             'pageSize': 100,
                             'geoQueryClause': {
-                                'lat': l || 43.653524,
-                                'lng': m || -79.383907,
+                                'lat': _syncLat,
+                                'lng': _syncLng,
                                 'unit': 'km',
-                                'distance': parseInt(n) || 25
+                                'distance': _syncDist
                             },
                             'consolidateSchedule': true
                         }
