@@ -339,7 +339,7 @@
             case 'RELOGIN':
                 logAction('ai', 'AI says session expired — re-logging in', true);
                 chrome.runtime.sendMessage({ action: 'reloginInNewTab' });
-                setTimeout(function() { chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }); window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
+                setTimeout(function() { window.location.href = 'https://hiring.amazon.ca/app#/jobSearch'; }, 30000);
                 break;
             case 'WAIT':
                 var sec = parseInt(actionParam) || 5;
@@ -577,9 +577,6 @@
             if (window['b']) { clearInterval(window['b']); window['b'] = null; }
             recordError();
 
-            // Close extra tabs
-            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
-
             // Escalating wait: 60s first, 2 min on repeat
             var _haltAttempts2 = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
             _haltAttempts2++;
@@ -641,10 +638,6 @@
             _reloginInProgress = false;
             window['__ss_halted'] = false; // Clear any halt
             sessionStorage.removeItem('__ss_halt_attempts'); // Reset escalation
-            // Clean up any extra Amazon tabs left over from re-login or errors
-            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }, function(r) {
-                if (r && r.closed > 0) logAction('cleanup', 'Closed ' + r.closed + ' extra Amazon tab(s)');
-            });
         }
     }
 
@@ -929,7 +922,6 @@
             // HALT
             window['__ss_halted'] = true;
             if (window['b']) { clearInterval(window['b']); window['b'] = null; }
-            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' });
 
             brainToast('⏸️ <b style="color:#f59e0b;">Halt ' + haltLabel + ' → then fresh login (attempt #' + _haltAttempts + ')</b>', haltTime);
             console.log(LOG_PREFIX, '⛔ HALT for ' + haltLabel + ' then fresh login');
@@ -1052,12 +1044,6 @@
         expandSearch: function() { _searchExpanded = false; _zeroShiftsSince = Date.now() - _expandAfterMs - 1; checkAutoExpand(); },
         // Force session check now
         checkSession: function() { _lastSessionCheck = 0; _consecutiveStaleChecks = 0; checkSessionAlive(); },
-        // Close all extra Amazon tabs (keep only this one)
-        cleanTabs: function() {
-            chrome.runtime.sendMessage({ action: 'closeExtraAmazonTabs' }, function(r) {
-                console.log(LOG_PREFIX, '🧹 Closed', r && r.closed || 0, 'extra tabs');
-            });
-        },
         // Reset all brain data
         reset: function() {
             _activityLog = []; _timings = {}; _failureHistory = {}; _recoveryMemory = {};
