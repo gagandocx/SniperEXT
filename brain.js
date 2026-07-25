@@ -570,29 +570,18 @@
             _consecutiveStaleChecks = 0;
             _reloginInProgress = true;
             var reason = hasError ? 'page error' : 'stale for ' + Math.round(staleness/1000) + 's';
-            logAction('session', '❌ Session DEAD (' + reason + ') — FULL HALT');
+            logAction('session', '❌ Session DEAD (' + reason + ') — CLEAN SLATE RESTART');
 
-            // FULL HALT — stop ALL extension activity
+            // HALT everything
             window['__ss_halted'] = true;
             if (window['b']) { clearInterval(window['b']); window['b'] = null; }
             recordError();
 
-            // Escalating wait: 60s first, 2 min on repeat
-            var _haltAttempts2 = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
-            _haltAttempts2++;
-            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts2.toString());
-            var waitTime2 = _haltAttempts2 <= 1 ? 60000 : 120000;
-            var waitLabel2 = _haltAttempts2 <= 1 ? '60s' : '2 min';
+            brainToast('⛔ <b style="color:#ef4444;">Session dead — closing all tabs → fresh start in 30s...</b>', 30000);
+            console.log(LOG_PREFIX, '⛔ CLEAN SLATE: Session dead, restarting everything');
 
-            brainToast('⛔ <b style="color:#ef4444;">HALTED — waiting ' + waitLabel2 + ' (attempt #' + _haltAttempts2 + ')</b>', 15000);
-            console.log(LOG_PREFIX, '⛔ FULL HALT — all activity stopped for ' + waitLabel2);
-
-            setTimeout(function() {
-                logAction('session', waitLabel2 + ' halt complete — fresh login');
-                window['__ss_halted'] = false;
-                _reloginInProgress = false;
-                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
-            }, waitTime2);
+            // Close all Amazon tabs, wait 30s, open fresh one
+            chrome.runtime.sendMessage({ action: 'cleanSlateRestart' });
         }
     }
 
@@ -904,34 +893,23 @@
             return;
         }
 
-        // ── LEVEL 3: Stale 60s+ OR page error → HALT 15s then fresh login ──
+        // ── LEVEL 3: Stale 60s+ OR page error → CLEAN SLATE RESTART ──
         if (hasPageError || staleness > 60000) {
-            var _haltAttempts = parseInt(sessionStorage.getItem('__ss_halt_attempts') || '0');
-            _haltAttempts++;
-            sessionStorage.setItem('__ss_halt_attempts', _haltAttempts.toString());
-
-            // Smart halt time: 15s first, 30s on repeat. NEVER more than 30s.
-            var haltTime = _haltAttempts <= 1 ? 15000 : 30000;
-            var haltLabel = _haltAttempts <= 1 ? '15s' : '30s';
-
-            logAction('health', 'L' + (2 + _haltAttempts) + ': ' + (hasPageError ? 'Page error' : 'Stale ' + Math.round(staleness/1000) + 's') + ' — HALT ' + haltLabel + ' (attempt #' + _haltAttempts + ')');
+            logAction('health', 'L3: ' + (hasPageError ? 'Page error' : 'Stale ' + Math.round(staleness/1000) + 's') + ' — CLEAN SLATE RESTART');
             _lastAction = Date.now();
             _reloginInProgress = true;
             recordError();
 
-            // HALT
+            // HALT everything
             window['__ss_halted'] = true;
             if (window['b']) { clearInterval(window['b']); window['b'] = null; }
 
-            brainToast('⏸️ <b style="color:#f59e0b;">Halt ' + haltLabel + ' → then fresh login (attempt #' + _haltAttempts + ')</b>', haltTime);
-            console.log(LOG_PREFIX, '⛔ HALT for ' + haltLabel + ' then fresh login');
+            brainToast('⛔ <b style="color:#ef4444;">Closing all tabs → fresh start in 30s...</b>', 30000);
+            console.log(LOG_PREFIX, '⛔ CLEAN SLATE: Closing all Amazon tabs → wait 30s → fresh start');
 
-            setTimeout(function() {
-                window['__ss_halted'] = false;
-                _reloginInProgress = false;
-                logAction('health', 'Halt done — fresh login NOW');
-                window.location.href = 'https://auth.hiring.amazon.ca/#/login';
-            }, haltTime);
+            // Tell background to close ALL Amazon tabs, wait 30s, open fresh one
+            chrome.runtime.sendMessage({ action: 'cleanSlateRestart' });
+            // This tab will be closed by background.js — nothing more to do here
             return;
         }
 
