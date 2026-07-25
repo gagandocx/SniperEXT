@@ -121,15 +121,28 @@
 
     function _buildQuery() {
         var today = new Date().toISOString().split('T')[0];
+        // Read user's actual search settings from the DOM (set by fetch.js)
+        // These are stored in the __ss_token_store element by fetch.js
+        var lat = 43.653524, lng = -79.383907, distance = 200, country = 'Canada', locale = 'en-CA';
+        try {
+            var storeEl = document.getElementById('__ss_token_store');
+            if (storeEl) {
+                if (storeEl.getAttribute('data-lat')) lat = parseFloat(storeEl.getAttribute('data-lat'));
+                if (storeEl.getAttribute('data-lng')) lng = parseFloat(storeEl.getAttribute('data-lng'));
+                if (storeEl.getAttribute('data-dist')) distance = parseInt(storeEl.getAttribute('data-dist'));
+                if (storeEl.getAttribute('data-country')) country = storeEl.getAttribute('data-country');
+                if (storeEl.getAttribute('data-locale')) locale = storeEl.getAttribute('data-locale');
+            }
+        } catch(e) {}
         return JSON.stringify({
             operationName: 'searchJobCardsByLocation',
             variables: { searchJobRequest: {
-                locale: 'en-CA', country: 'Canada', keyWords: '',
+                locale: locale, country: country, keyWords: '',
                 equalFilters: [], containFilters: [{ key: 'isPrivateSchedule', val: ['false'] }],
                 rangeFilters: [{ key: 'hoursPerWeek', range: { minimum: 0, maximum: 80 } }],
                 dateFilters: [{ key: 'firstDayOnSite', range: { startDate: today } }],
                 excludeFilters: [], orFilters: [], sorters: [], pageSize: 100,
-                geoQueryClause: { lat: 43.653524, lng: -79.383907, unit: 'km', distance: 200 },
+                geoQueryClause: { lat: lat, lng: lng, unit: 'km', distance: distance },
                 consolidateSchedule: true
             }},
             query: 'query searchJobCardsByLocation($searchJobRequest: SearchJobRequest!) { searchJobCardsByLocation(searchJobRequest: $searchJobRequest) { nextToken jobCards { jobId language dataSource requisitionType jobTitle jobType employmentType city state postalCode locationName totalPayRateMin totalPayRateMax tagLine bannerText image distance featuredJob bonusJob bonusPay scheduleCount currencyCode geoClusterDescription surgePay jobTypeL10N employmentTypeL10N totalPayRateMinL10N totalPayRateMaxL10N distanceL10N monthlyBasePayMin monthlyBasePayMinL10N monthlyBasePayMax monthlyBasePayMaxL10N virtualLocation poolingEnabled } } }'

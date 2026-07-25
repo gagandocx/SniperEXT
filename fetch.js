@@ -982,6 +982,21 @@
             if (_reqCounter <= 1) {
                 console.log('[SS] Config: City=' + k + ' Lat=' + l + ' Lng=' + m + ' Dist=' + n + ' Type=' + o + ' Country=' + i);
             }
+            // ── Sync search settings to DOM for HYPER MODE (tokenCapture.js reads these) ──
+            (function() {
+                var _el = document.getElementById('__ss_token_store');
+                if (!_el) {
+                    _el = document.createElement('div');
+                    _el.id = '__ss_token_store';
+                    _el.style.display = 'none';
+                    document.documentElement.appendChild(_el);
+                }
+                _el.setAttribute('data-lat', (l || 43.653524).toString());
+                _el.setAttribute('data-lng', (m || -79.383907).toString());
+                _el.setAttribute('data-dist', (n || 200).toString());
+                _el.setAttribute('data-country', i || 'Canada');
+                _el.setAttribute('data-locale', i === 'United States' ? 'en-US' : 'en-CA');
+            })();
             // ─────────────────────────────────────────────────────────────────
             const O = (o && o !== 'Any') ? [{
                         'key': 'jobType',
