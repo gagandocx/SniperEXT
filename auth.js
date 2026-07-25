@@ -306,6 +306,21 @@ FINAL ANSWER: [exactly 5 numbers, e.g. 1,2,4,7,9]` }
                     })
                 });
             } finally { clearTimeout(gt); }
+            // Check for rate limiting (429)
+            if (gResp.status === 429) {
+                console.log('[auth.js] Groq rate limited (429) — waiting 15s before retry');
+                toast('⏸️ <b style="color:#f59e0b;">Groq rate limited — waiting 15s...</b>', 15000);
+                _groqRateLimited = true;
+                await sleep(15000);
+                _groqRateLimited = false;
+                return; // Exit — captchaWatcher will retry after cooldown
+            }
+            if (!gResp.ok) {
+                console.log('[auth.js] Groq error:', gResp.status);
+                toast('❌ Groq error: ' + gResp.status, 5000);
+                await sleep(5000);
+                return;
+            }
             const gData = await gResp.json();
             const resp = (gData.choices && gData.choices[0] && gData.choices[0].message && gData.choices[0].message.content || '').trim();
             console.log('[auth.js] Groq:', resp);
@@ -685,6 +700,8 @@ FINAL ANSWER: [exactly 5 numbers, e.g. 1,2,4,7,9]` }
     }
 
     // ── Dedicated CAPTCHA watcher — runs every 600ms, completely independent ──
+    var _groqRateLimited = false; // Flag: Groq returned 429, need to wait longer
+
     async function captchaWatcher() {
         if (_captchaHandling) return;
 
@@ -709,11 +726,11 @@ FINAL ANSWER: [exactly 5 numbers, e.g. 1,2,4,7,9]` }
             try {
                 await handleCaptcha();
             } finally {
-                // Wait 1.5s after solve attempt before allowing retry
-                // Quick retry — if wrong, new grid appears fast
-                await sleep(1500);
+                // Wait before allowing retry — longer if Groq was rate limited
+                var _retryCooldown = _groqRateLimited ? 15000 : 1500;
+                await sleep(_retryCooldown);
                 _captchaHandling = false;
-                console.log('[auth.js] captchaWatcher ready for retry');
+                console.log('[auth.js] captchaWatcher ready for retry (waited ' + _retryCooldown + 'ms)');
             }
         }
     }
