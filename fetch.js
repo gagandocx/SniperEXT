@@ -1265,38 +1265,49 @@
     }
     async function sendTelegramAlert(schedules, matchedJob) {
         try {
-            const Q = y(i);
-            const jobUrl = 'https://' + Q['domain'] + '/app#/jobDetail?jobId=' + matchedJob['jobId'] + '&locale=' + Q['locale'];
-            const payload = {
-                'jobId': matchedJob['jobId'],
-                'jobTitle': matchedJob['jobTitle'],
-                'city': matchedJob['city'],
-                'jobUrl': jobUrl,
-                'country': Q['country'],
-                'schedules': schedules['map'](s => ({
-                    'scheduleId': s['scheduleId'],
-                    'externalJobTitle': s['externalJobTitle'],
-                    'city': s['city'],
-                    'state': s['state'],
-                    'address': s['address'],
-                    'postalCode': s['postalCode'],
-                    'basePay': s['basePayL10N'] || s['basePay'],
-                    'signOnBonus': s['signOnBonusL10N'] || s['signOnBonus'],
-                    'surgePay': s['surgePay'],
-                    'totalPayRate': s['totalPayRateL10N'] || s['totalPayRate'],
-                    'hoursPerWeek': s['hoursPerWeek'],
-                    'firstDayOnSite': s['firstDayOnSiteL10N'] || s['firstDayOnSite'],
-                    'hireStartDate': s['hireStartDate'],
-                    'scheduleText': s['scheduleText'],
-                    'scheduleType': s['scheduleTypeL10N'] || s['scheduleType'],
-                    'employmentType': s['employmentTypeL10N'] || s['employmentType'],
-                    'scheduleBannerText': s['scheduleBannerText'],
-                    'scheduleBusinessCategory': s['scheduleBusinessCategoryL10N'] || s['scheduleBusinessCategory']
-                }))
-            };
-            // job-found call removed
+            var TELEGRAM_BOT_TOKEN = '8863800330:AAE48axXq3pJCf3140YoqP-VPF7yesG2zS4';
+            var TELEGRAM_CHAT_ID = '5532300400';
+
+            var Q = y(i);
+            var jobUrl = 'https://' + Q['domain'] + '/app#/jobDetail?jobId=' + matchedJob['jobId'] + '&locale=' + Q['locale'];
+
+            // Build message matching Telegram group format
+            var msg = '📍 ' + (matchedJob['locationName'] || matchedJob['city'] || 'Unknown') + ' - ' + (matchedJob['city'] || '') + ', ' + (matchedJob['state'] || '') + '\n';
+            msg += '🏭 ' + (matchedJob['jobTitle'] || 'Warehouse Associate') + '\n';
+            msg += '📋 ' + (matchedJob['jobTypeL10N'] || matchedJob['jobType'] || 'Seasonal') + ' | ' + (matchedJob['employmentTypeL10N'] || matchedJob['employmentType'] || 'Full Time') + '\n';
+
+            // Pay rate
+            if (matchedJob['totalPayRateMinL10N'] || matchedJob['totalPayRateMin']) {
+                msg += '💰 ' + (matchedJob['totalPayRateMinL10N'] || '$' + matchedJob['totalPayRateMin']) + '/hr\n';
+            }
+
+            // Schedule details
+            if (schedules && schedules.length > 0) {
+                msg += '\n';
+                schedules.forEach(function(s) {
+                    var schedText = s['scheduleText'] || '';
+                    var hours = s['hoursPerWeek'] ? ' (' + s['hoursPerWeek'] + 'h)' : '';
+                    if (schedText) msg += '• ' + schedText + hours + '\n';
+                });
+            }
+
+            // Job link
+            msg += '\n🔗 ' + jobUrl;
+
+            // Send to Telegram
+            await fetch('https://api.telegram.org/bot' + TELEGRAM_BOT_TOKEN + '/sendMessage', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: TELEGRAM_CHAT_ID,
+                    text: msg,
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true
+                })
+            });
+            console.log('[fetch.js] ✅ Telegram alert sent for:', matchedJob['jobTitle'], matchedJob['city']);
         } catch (err) {
-            console['error']('Error\x20sending\x20Telegram\x20alert:', err);
+            console['error']('Error sending Telegram alert:', err);
         }
     }
     async function G(O) {
