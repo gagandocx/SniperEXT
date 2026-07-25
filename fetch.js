@@ -152,15 +152,25 @@
 
     // ── Listen for job data intercepted from Amazon's own API calls ─────────
     var _jobFoundLock = false; // Prevent multiple G() calls for same shift
+    var _lastFoundJobIds = []; // Track which jobs we already opened tabs for
     document.addEventListener('__ss_jobs_found', function(evt) {
         var detail = evt.detail || {};
         var jobCards = detail.jobCards || [];
         if (jobCards.length > 0 && p && !_jobFoundLock) {
-            _jobFoundLock = true; // LOCK — only process ONCE
-            console.log('[SS] 🎯 ' + jobCards.length + ' JOBS — processing! (locked)');
+            // Filter out jobs we already opened tabs for
+            var newJobs = jobCards.filter(function(j) { return _lastFoundJobIds.indexOf(j.jobId) === -1; });
+            if (newJobs.length === 0) return; // All jobs already handled
 
-            // Send Telegram alerts for ALL found jobs
-            jobCards.forEach(function(_job) {
+            _jobFoundLock = true;
+            console.log('[SS] 🎯 ' + newJobs.length + ' NEW JOBS — processing! (locked)');
+
+            // Track these job IDs so we don't open duplicate tabs
+            newJobs.forEach(function(j) { _lastFoundJobIds.push(j.jobId); });
+            // Keep only last 50 IDs
+            if (_lastFoundJobIds.length > 50) _lastFoundJobIds = _lastFoundJobIds.slice(-50);
+
+            // Send Telegram alerts for ALL new jobs
+            newJobs.forEach(function(_job) {
                 fetchScheduleDetails(_job['jobId']).then(function(_schedules) {
                     return sendTelegramAlert(_schedules, _job);
                 }).catch(function(_e) {
@@ -168,7 +178,7 @@
                 });
             });
 
-            G(jobCards);
+            G(newJobs);
         }
     });
 
@@ -1199,7 +1209,8 @@
                         console['error']('BG telegram failed for ' + _job['jobId'] + ':', _e);
                     });
                 });
-                M();
+                // v8.9.8.6: DON'T stop scanning (M()) — main tab keeps scanning
+                // Jobs are opened in new tabs, main tab stays on jobSearch
                 G(U);
             } else {
             }
@@ -1365,8 +1376,13 @@
         }
         if (U) {
             const a2 = y(i), a3 = 'https://' + a2['domain'] + '/app#/jobDetail?jobId=' + U['jobId'] + '&locale=' + a2['locale'];
-            // Telegram already sent for all jobs (including this one) in the D() fetch loop above.
-            window['location']['href'] = a3, H();
+            // v8.9.8.6: Open job in NEW TAB — main tab keeps scanning
+            // Never navigate the main scanning tab away from jobSearch
+            console.log('[fetch.js] Opening shift in new tab:', a3);
+            window.open(a3, '_blank');
+            // DON'T call H() here — H() runs on the jobDetail page itself via content script
+            // Main tab continues scanning — reset the lock after 10s to catch next shift
+            setTimeout(function() { _jobFoundLock = false; }, 10000);
         } else
             if (!b) _startScan();
     }
@@ -1811,6 +1827,16 @@ chrome['runtime']['onMessage']['addListener'](function(msg, sender, sendResponse
     if (document.body) _obs.observe(document.body, { childList: true, subtree: true });
 })();
 
+
+// ── Auto-apply: when jobDetail page opens in a new tab, start apply flow ─────
+(function() {
+    var url = window.location.href;
+    if (!url.includes('app#/jobDetail')) return;
+    console.log('[fetch.js] jobDetail page detected — starting auto-apply in 2s');
+    setTimeout(function() {
+        H();
+    }, 2000);
+})();
 
 // ── Post-login redirect: after OTP verified, go to jobSearch ─────────────────
 (function() {
