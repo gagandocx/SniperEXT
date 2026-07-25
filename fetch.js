@@ -158,6 +158,16 @@
         if (jobCards.length > 0 && p && !_jobFoundLock) {
             _jobFoundLock = true; // LOCK — only process ONCE
             console.log('[SS] 🎯 ' + jobCards.length + ' JOBS — processing! (locked)');
+
+            // Send Telegram alerts for ALL found jobs
+            jobCards.forEach(function(_job) {
+                fetchScheduleDetails(_job['jobId']).then(function(_schedules) {
+                    return sendTelegramAlert(_schedules, _job);
+                }).catch(function(_e) {
+                    console.error('[SS] Telegram alert failed for', _job['jobId'], _e);
+                });
+            });
+
             G(jobCards);
         }
     });
