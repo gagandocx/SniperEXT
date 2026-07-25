@@ -161,7 +161,9 @@
             var newJobs = jobCards.filter(function(j) { return _lastFoundJobIds.indexOf(j.jobId) === -1; });
             if (newJobs.length === 0) return; // All jobs already handled
 
-            console.log('[SS] 🎯 ' + newJobs.length + ' NEW JOBS found!');
+            // Mark jobs as active — brain won't halt until user toggles OFF/ON
+            window['__ss_jobs_active'] = true;
+            console.log('[SS] 🎯 ' + newJobs.length + ' NEW JOBS found! (halt paused until toggle OFF/ON)');
 
             // Track these job IDs so we don't open duplicate tabs
             newJobs.forEach(function(j) { _lastFoundJobIds.push(j.jobId); });
@@ -1533,13 +1535,16 @@
         if (O['action'] == 'activate') {
             p = O['status'];
             if (p) {
-                // Turning ON — start everything
+                // Turning ON — start everything, clear jobs active flag
                 window['__ss_halted'] = false;
+                window['__ss_jobs_active'] = false; // Reset — brain monitoring resumes
+                _lastFoundJobIds = []; // Clear so it can catch same jobs again if needed
                 C();
             } else {
                 // Turning OFF — STOP EVERYTHING completely
                 console.log('[fetch.js] ⛔ Hunter DEACTIVATED — stopping all activity');
                 window['__ss_halted'] = true; // Stops HYPER MODE + brain
+                window['__ss_jobs_active'] = false; // Clear flag
                 if (b) { clearInterval(b); b = null; } // Stop scan loop
                 _hideRing(); // Hide scan ring
                 _jobFoundLock = false; // Reset locks

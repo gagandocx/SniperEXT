@@ -858,14 +858,9 @@
         if (_lastAction && (Date.now() - _lastAction < 10000)) return;
 
         // ── DON'T halt if jobs were recently found (user might be applying) ──
-        var _storeCheck = document.getElementById('__ss_token_store');
-        if (_storeCheck) {
-            var _lastJobs = parseInt(_storeCheck.getAttribute('data-jobs') || '0');
-            var _lastJobTs = parseInt(_storeCheck.getAttribute('data-ts') || '0');
-            // Jobs found in last 5 minutes → user is applying, don't interfere
-            if (_lastJobs > 0 && (Date.now() - _lastJobTs) < 300000) {
-                return;
-            }
+        // Only resume monitoring when user toggles extension OFF then ON
+        if (window['__ss_jobs_active']) {
+            return; // User is applying — don't interfere. Toggle OFF/ON to reset.
         }
 
         var bodyText = (document.body && document.body.innerText) || '';
