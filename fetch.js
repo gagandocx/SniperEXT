@@ -1276,7 +1276,7 @@
     async function sendTelegramAlert(schedules, matchedJob) {
         try {
             var TELEGRAM_BOT_TOKEN = '8863800330:AAE48axXq3pJCf3140YoqP-VPF7yesG2zS4';
-            var TELEGRAM_CHAT_ID = '5532300400';
+            var TELEGRAM_CHAT_ID = '-5532300400';
 
             var Q = y(i);
             var jobUrl = 'https://' + Q['domain'] + '/app#/jobDetail?jobId=' + matchedJob['jobId'] + '&locale=' + Q['locale'];
